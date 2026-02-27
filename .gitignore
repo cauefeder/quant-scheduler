@@ -1,0 +1,55 @@
+# ── Credentials — NEVER COMMIT ────────────────────────────────────────────────
+.env
+*.env
+config.toml          # HedgePoly: contains bot token and absolute paths
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+wheels/
+
+# ── Data & large files ────────────────────────────────────────────────────────
+data/
+data.zip
+*.zip
+*.tar.gz
+*.tar.zst
+*.zst
+
+# ── Runtime outputs ───────────────────────────────────────────────────────────
+output/
+logs/
+*.log
+results.json
+pipeline_results.json
+*.tmp
+
+# ── OS / IDE ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+*~
+
+# ── Research / scratch ────────────────────────────────────────────────────────
+scratchpad/
+fig/
+research/*
+!research/main.tex
+!research/main.pdf
+!research/fig
+!research/analysis
+!research/sections
+
+# ── Cursor files ──────────────────────────────────────────────────────────────
+.backfill_cursor

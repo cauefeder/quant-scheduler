@@ -1,0 +1,28 @@
+# Core
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+yfinance>=0.2.30
+
+# Charting
+plotly>=5.15
+kaleido>=0.2.1  # For static image export (Telegram)
+
+# Telegram
+python-telegram-bot>=20.0
+
+# Config
+python-dotenv>=1.0
+
+# HTTP
+requests>=2.31
+aiohttp>=3.9
+
+# Scheduling (optional, can use OS scheduler)
+schedule>=1.2
+
+# Testing
+pytest>=7.4
+
+# Typing
+typing-extensions>=4.7

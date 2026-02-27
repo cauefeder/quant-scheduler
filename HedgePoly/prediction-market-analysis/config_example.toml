@@ -1,0 +1,46 @@
+# Prediction Market Alpha Engine — Configuration
+# Copy this to config.toml and fill in your values.
+
+[paths]
+# Path to the extracted dataset (after running `make setup`)
+data_dir = "/path/to/prediction-market-analysis/data"
+# Where to save analysis outputs (charts, reports, caches)
+output_dir = "./output"
+
+[telegram]
+# Get your token from @BotFather on Telegram
+bot_token = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+# Optional: restrict bot to specific chat IDs (comma-separated)
+# Leave empty to allow all users
+allowed_chat_ids = ""
+# How often to send scheduled reports (hours)
+report_interval_hours = 24
+
+[analysis]
+# Monte Carlo simulations for Kelly sizing
+monte_carlo_runs = 10000
+# Confidence level for drawdown sizing (0.95 = 95th percentile)
+drawdown_confidence = 0.95
+# Minimum trades required for a pattern to be statistically valid
+min_sample_size = 30
+# Kelly fraction multiplier (0.5 = half-Kelly, conservative)
+kelly_fraction = 0.5
+
+[calibration]
+# Price bins for calibration surface (number of bins 1-100)
+price_bins = 20
+# Time bins (days to resolution)
+time_bins = 10
+# Mispricing threshold for trade signals (percentage points)
+signal_threshold = 5.0
+
+[orderflow]
+# Minimum volume for a market to be included
+min_market_volume = 100
+# Large order threshold (flag for adverse selection)
+large_order_percentile = 95
+
+[dashboard]
+host = "0.0.0.0"
+port = 5050
+debug = false

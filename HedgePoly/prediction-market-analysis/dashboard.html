@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alpha Engine — Prediction Market Intelligence</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-card: #111118;
+    --bg-elevated: #1a1a24;
+    --border: #2a2a3a;
+    --text-primary: #e8e8f0;
+    --text-secondary: #8888a0;
+    --text-muted: #555568;
+    --accent-green: #00ff88;
+    --accent-red: #ff3355;
+    --accent-blue: #4488ff;
+    --accent-orange: #ff8844;
+    --accent-purple: #aa66ff;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-sans: 'DM Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ─────────────────────────────────── */
+  .header {
+    padding: 2rem 3rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(180deg, #0f0f18 0%, var(--bg-primary) 100%);
+  }
+
+  .logo {
+    display: flex; align-items: center; gap: 1rem;
+  }
+
+  .logo-icon {
+    width: 40px; height: 40px;
+    background: var(--accent-green);
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .logo h1 {
+    font-family: var(--font-mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+  }
+
+  .logo h1 span { color: var(--accent-green); }
+
+  .header-meta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: right;
+  }
+
+  .header-meta .live-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--accent-green);
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── Stats Bar ──────────────────────────────── */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat-item {
+    background: var(--bg-primary);
+    padding: 1.5rem 2rem;
+    text-align: center;
+  }
+
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 1.8rem;
+    font-weight: 700;
+    margin-bottom: 0.3rem;
+  }
+
+  .stat-value.green { color: var(--accent-green); }
+  .stat-value.red { color: var(--accent-red); }
+  .stat-value.blue { color: var(--accent-blue); }
+  .stat-value.orange { color: var(--accent-orange); }
+
+  .stat-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+
+  /* ── Main Grid ──────────────────────────────── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 200px);
+  }
+
+  .panel {
+    background: var(--bg-primary);
+    padding: 2rem;
+    position: relative;
+  }
+
+  .panel-title {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 0.3rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .panel-title::before {
+    content: '';
+    width: 8px; height: 8px;
+    background: var(--accent-green);
+    display: inline-block;
+  }
+
+  .panel-subtitle {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+  }
+
+  /* ── Charts ─────────────────────────────────── */
+  .chart-container {
+    width: 100%;
+    height: 320px;
+  }
+
+  /* ── Kelly Calculator ───────────────────────── */
+  .kelly-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .form-group label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 0.4rem;
+  }
+
+  .form-group input {
+    width: 100%;
+    padding: 0.7rem 1rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    border-radius: 4px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .form-group input:focus {
+    border-color: var(--accent-green);
+  }
+
+  .btn-calc {
+    align-self: end;
+    padding: 0.7rem 1.5rem;
+    background: var(--accent-green);
+    color: #000;
+    border: none;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+
+  .btn-calc:hover {
+    background: #00cc6e;
+    transform: translateY(-1px);
+  }
+
+  .kelly-result {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .kelly-result .highlight {
+    color: var(--accent-green);
+    font-weight: 700;
+  }
+
+  /* ── Table ──────────────────────────────────── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .data-table th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 500;
+    font-size: 0.65rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table td {
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid #1a1a24;
+    color: var(--text-secondary);
+  }
+
+  .data-table tr:hover td {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .positive { color: var(--accent-green); }
+  .negative { color: var(--accent-red); }
+
+  /* ── Fullwidth panel ────────────────────────── */
+  .panel.full {
+    grid-column: 1 / -1;
+  }
+
+  /* ── Loading ────────────────────────────────── */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 200px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+
+  .loading::after {
+    content: '';
+    width: 20px; height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-green);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-left: 0.8rem;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ─────────────────────────────── */
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+    .header { padding: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon"></div>
+    <h1>ALPHA<span>.</span>ENGINE</h1>
+  </div>
+  <div class="header-meta">
+    <div><span class="live-dot"></span>CONNECTED TO DATASET</div>
+    <div id="timestamp">Loading...</div>
+  </div>
+</div>
+
+<!-- ── Stats Bar ───────────────────────────────────────────────────────── -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <div class="stat-value blue" id="stat-trades">—</div>
+    <div class="stat-label">Total Trades</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-value red" id="stat-longshot">—</div>
+    <div class="stat-label">Longshot Bias</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-value green" id="stat-maker">—</div>
+    <div class="stat-label">Maker Edge</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-value orange" id="stat-taker-neg">—</div>
+    <div class="stat-label">Taker Loses At</div>
+  </div>
+</div>
+
+<!-- ── Main Grid ───────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- Panel 1: Calibration Curve -->
+  <div class="panel">
+    <div class="panel-title">Method 2</div>
+    <div class="panel-subtitle">Calibration Curve — Implied vs Actual</div>
+    <div id="chart-calibration" class="chart-container"><div class="loading">Loading calibration data</div></div>
+  </div>
+
+  <!-- Panel 2: Order Flow Maker vs Taker -->
+  <div class="panel">
+    <div class="panel-title">Method 3</div>
+    <div class="panel-subtitle">Order Flow — Maker vs Taker Excess</div>
+    <div id="chart-orderflow" class="chart-container"><div class="loading">Loading order flow data</div></div>
+  </div>
+
+  <!-- Panel 3: Kelly Calculator -->
+  <div class="panel">
+    <div class="panel-title">Method 1</div>
+    <div class="panel-subtitle">Empirical Kelly Calculator</div>
+    <div class="kelly-form">
+      <div class="form-group">
+        <label>Entry Price (0-1)</label>
+        <input type="number" id="kelly-price" value="0.15" step="0.01" min="0.01" max="0.99">
+      </div>
+      <div class="form-group">
+        <label>Est. True Prob (0-1)</label>
+        <input type="number" id="kelly-prob" value="0.25" step="0.01" min="0.01" max="0.99">
+      </div>
+      <button class="btn-calc" onclick="runKelly()">CALCULATE</button>
+    </div>
+    <div class="kelly-result" id="kelly-output">
+Enter an entry price and your estimated true probability, then click CALCULATE.
+
+Example: Price=0.15 (15¢ contract), Est. Prob=0.25 (you think 25% chance)
+
+The engine will:
+  → Extract historical analogs from 400M+ trades
+  → Run 10,000 Monte Carlo simulations
+  → Calculate uncertainty-adjusted position size
+    </div>
+  </div>
+
+  <!-- Panel 4: Longshot Opportunities Table -->
+  <div class="panel">
+    <div class="panel-title">Opportunities</div>
+    <div class="panel-subtitle">Top Underpriced Contracts</div>
+    <div id="longshots-table"><div class="loading">Scanning for opportunities</div></div>
+  </div>
+
+  <!-- Panel 5: Calibration Surface (fullwidth) -->
+  <div class="panel full">
+    <div class="panel-title">Surface Analysis</div>
+    <div class="panel-subtitle">Mispricing Heatmap — Price × Time to Resolution</div>
+    <div id="chart-surface" style="width:100%;height:400px;"><div class="loading">Building calibration surface</div></div>
+  </div>
+
+</div>
+
+<script>
+const API = '';  // Same origin
+
+// ── Fetch helpers ────────────────────────────────
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(API + url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.error(`Fetch ${url} failed:`, e);
+    return null;
+  }
+}
+
+// ── Plotly dark theme ────────────────────────────
+const plotLayout = {
+  paper_bgcolor: '#0a0a0f',
+  plot_bgcolor: '#0a0a0f',
+  font: { family: 'JetBrains Mono', color: '#8888a0', size: 11 },
+  margin: { l: 50, r: 20, t: 10, b: 40 },
+  xaxis: { gridcolor: '#1a1a24', zerolinecolor: '#2a2a3a' },
+  yaxis: { gridcolor: '#1a1a24', zerolinecolor: '#2a2a3a' },
+};
+
+const plotConfig = { displayModeBar: false, responsive: true };
+
+// ── 1. Calibration Chart ─────────────────────────
+async function loadCalibration() {
+  const data = await fetchJSON('/api/calibration');
+  if (!data || data.error) {
+    document.getElementById('chart-calibration').innerHTML =
+      '<div class="loading">No calibration data — run pipeline first</div>';
+    return;
+  }
+
+  const prices = data.map(d => d.price_cent);
+  const implied = data.map(d => d.implied_prob * 100);
+  const empirical = data.map(d => d.empirical_prob * 100);
+
+  Plotly.newPlot('chart-calibration', [
+    {
+      x: implied, y: implied, mode: 'lines', name: 'Perfect Calibration',
+      line: { color: '#2a2a3a', dash: 'dash', width: 1 },
+    },
+    {
+      x: implied, y: empirical, mode: 'lines+markers', name: 'Actual',
+      line: { color: '#00ff88', width: 2 },
+      marker: { size: 4, color: '#00ff88' },
+    },
+  ], {
+    ...plotLayout,
+    xaxis: { ...plotLayout.xaxis, title: 'Implied Probability (%)' },
+    yaxis: { ...plotLayout.yaxis, title: 'Empirical Win Rate (%)' },
+    showlegend: true,
+    legend: { x: 0.02, y: 0.98, bgcolor: 'transparent', font: { size: 10 } },
+  }, plotConfig);
+
+  // Update stats
+  const lowPrice = data.filter(d => d.price_cent <= 5);
+  if (lowPrice.length > 0) {
+    const avgBias = lowPrice.reduce((s, d) => s + d.mispricing_pct, 0) / lowPrice.length;
+    document.getElementById('stat-longshot').textContent = avgBias.toFixed(1) + '%';
+  }
+}
+
+// ── 2. Order Flow Chart ──────────────────────────
+async function loadOrderflow() {
+  const data = await fetchJSON('/api/orderflow');
+  if (!data || data.error) {
+    document.getElementById('chart-orderflow').innerHTML =
+      '<div class="loading">No order flow data — run pipeline first</div>';
+    return;
+  }
+
+  const levels = data.price_levels || [];
+  const prices = levels.map(d => d.price_cent);
+  const takerEx = levels.map(d => d.taker_excess);
+  const makerEx = levels.map(d => d.maker_excess);
+
+  Plotly.newPlot('chart-orderflow', [
+    {
+      x: prices, y: takerEx, type: 'bar', name: 'Taker Excess',
+      marker: { color: takerEx.map(v => v < 0 ? '#ff3355' : '#4488ff') },
+    },
+    {
+      x: prices, y: makerEx, type: 'scatter', mode: 'lines', name: 'Maker Edge',
+      line: { color: '#00ff88', width: 2 },
+    },
+  ], {
+    ...plotLayout,
+    xaxis: { ...plotLayout.xaxis, title: 'Price (¢)' },
+    yaxis: { ...plotLayout.yaxis, title: 'Excess Return (%)' },
+    barmode: 'relative',
+    showlegend: true,
+    legend: { x: 0.6, y: 0.98, bgcolor: 'transparent', font: { size: 10 } },
+  }, plotConfig);
+
+  // Update stats
+  document.getElementById('stat-trades').textContent =
+    data.total_trades ? (data.total_trades / 1e6).toFixed(1) + 'M' : '—';
+  document.getElementById('stat-maker').textContent =
+    data.maker_yes_excess ? '+' + ((data.maker_yes_excess + data.maker_no_excess) / 2).toFixed(2) + '%' : '—';
+  document.getElementById('stat-taker-neg').textContent =
+    data.taker_negative_levels ? data.taker_negative_levels + '/99' : '—';
+}
+
+// ── 3. Kelly Calculator ──────────────────────────
+async function runKelly() {
+  const price = parseFloat(document.getElementById('kelly-price').value);
+  const prob = parseFloat(document.getElementById('kelly-prob').value);
+  const output = document.getElementById('kelly-output');
+
+  if (isNaN(price) || isNaN(prob) || price <= 0 || price >= 1 || prob <= 0 || prob >= 1) {
+    output.textContent = '⚠️  Both values must be between 0 and 1.';
+    return;
+  }
+
+  output.innerHTML = '<div class="loading">Running Monte Carlo simulation</div>';
+
+  const data = await fetchJSON(`/api/kelly/${price}/${prob}`);
+  if (!data || data.error) {
+    output.textContent = '⚠️  ' + (data?.error || 'Analysis failed. Ensure pipeline data is loaded.');
+    return;
+  }
+
+  const pct = v => (v * 100).toFixed(2) + '%';
+  output.innerHTML = `
+<span class="highlight">📊 EMPIRICAL KELLY ANALYSIS</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Strategy:      ${data.strategy_label}
+Entry Price:   ${(data.entry_price * 100).toFixed(0)}¢
+Est. Prob:     ${pct(data.estimated_prob)}
+
+🎯 Textbook Kelly:     ${pct(data.textbook_kelly)}
+   Edge (textbook):    ${pct(data.textbook_edge)}
+
+📈 Historical Analogs: ${data.n_historical_analogs?.toLocaleString() ?? 0}
+   Empirical Win Rate: ${pct(data.empirical_win_rate)}
+   CV (uncertainty):   ${data.cv_edge?.toFixed(3) ?? '—'}
+
+🎲 Monte Carlo:
+   Median Drawdown:    ${pct(data.mc_median_drawdown)}
+   95th %ile Drawdown: ${pct(data.mc_p95_drawdown)}
+   99th %ile Drawdown: ${pct(data.mc_p99_drawdown)}
+
+<span class="highlight">✅ Empirical Kelly:    ${pct(data.empirical_kelly)}</span>
+<span class="highlight">🎯 Recommended Size:   ${pct(data.recommended_size)}</span>
+   (half-Kelly conservative)
+  `;
+}
+
+// ── 4. Longshots Table ───────────────────────────
+async function loadLongshots() {
+  const data = await fetchJSON('/api/longshots');
+  const container = document.getElementById('longshots-table');
+  if (!data || data.error || !data.length) {
+    container.innerHTML = '<div class="loading">No opportunities — run pipeline first</div>';
+    return;
+  }
+
+  let html = `<table class="data-table">
+    <thead><tr>
+      <th>#</th><th>Price</th><th>Time</th>
+      <th>Implied</th><th>Actual</th><th>Edge</th><th>Trades</th>
+    </tr></thead><tbody>`;
+
+  data.forEach((d, i) => {
+    const cls = d.mispricing > 0 ? 'positive' : 'negative';
+    html += `<tr>
+      <td>${i + 1}</td>
+      <td>${(d.price * 100).toFixed(0)}¢</td>
+      <td>${d.time.toFixed(0)}d</td>
+      <td>${(d.implied * 100).toFixed(1)}%</td>
+      <td>${(d.empirical * 100).toFixed(1)}%</td>
+      <td class="${cls}">${d.mispricing > 0 ? '+' : ''}${d.mispricing.toFixed(2)}%</td>
+      <td>${d.n_trades.toLocaleString()}</td>
+    </tr>`;
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ── 5. Surface Heatmap ───────────────────────────
+async function loadSurface() {
+  const data = await fetchJSON('/api/surface');
+  if (!data || data.error) {
+    document.getElementById('chart-surface').innerHTML =
+      '<div class="loading">No surface data — run pipeline first</div>';
+    return;
+  }
+
+  Plotly.newPlot('chart-surface', [{
+    z: data.surface,
+    x: data.time_bins.map(t => t.toFixed(0) + 'd'),
+    y: data.price_bins.map(p => (p * 100).toFixed(0) + '¢'),
+    type: 'heatmap',
+    colorscale: [
+      [0, '#ff3355'],
+      [0.3, '#ff6644'],
+      [0.5, '#1a1a24'],
+      [0.7, '#2266aa'],
+      [1, '#00ff88'],
+    ],
+    colorbar: {
+      title: { text: 'Mispricing %', font: { size: 11 } },
+      tickfont: { size: 10 },
+    },
+    hovertemplate: 'Price: %{y}<br>Time: %{x}<br>Mispricing: %{z:.2f}%<extra></extra>',
+  }], {
+    ...plotLayout,
+    margin: { l: 60, r: 80, t: 10, b: 50 },
+    xaxis: { ...plotLayout.xaxis, title: 'Days to Resolution' },
+    yaxis: { ...plotLayout.yaxis, title: 'Contract Price' },
+  }, plotConfig);
+}
+
+// ── Init ─────────────────────────────────────────
+document.getElementById('timestamp').textContent =
+  new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+
+loadCalibration();
+loadOrderflow();
+loadLongshots();
+loadSurface();
+</script>
+</body>
+</html>
