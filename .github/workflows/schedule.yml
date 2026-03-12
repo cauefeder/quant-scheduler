@@ -1,0 +1,51 @@
+name: Quant Scheduler
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # 6:00 AM Saskatchewan (UTC-6, no DST)
+    - cron: '0 22 * * *'   # 4:00 PM Saskatchewan
+  workflow_dispatch:         # manual trigger from GitHub UI
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout scheduler
+        uses: actions/checkout@v4
+        # scheduler.py lands at $GITHUB_WORKSPACE/scheduler.py
+        # PROJECTS_DIR will be $GITHUB_WORKSPACE — sibling repos cloned below
+
+      - name: Clone sibling projects
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_USER: ${{ secrets.GITHUB_USER }}
+        run: |
+          clone() {
+            local repo=$1 dest=$2
+            git clone --depth 1 \
+              "https://${GITHUB_USER}:${GH_PAT}@github.com/${GITHUB_USER}/${repo}.git" \
+              "$GITHUB_WORKSPACE/$dest" 2>&1 \
+              && echo "Cloned $repo → $dest" \
+              || echo "SKIP $repo (not found or access denied)"
+          }
+          clone HedgePoly                          "HedgePoly"
+          clone PolyTraders                        "PolyTraders"
+          # Add more repos here as you push them:
+          # clone Poly2                            "Poly2"
+          # clone ModelTelegra                     "ModelTelegra,"
+          # clone Poly                             "Poly"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run all projects
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python scheduler.py --once
