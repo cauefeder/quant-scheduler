@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && pip install uv \
     && rm -rf /var/lib/apt/lists/*
 
-COPY bot.py scheduler.py entrypoint.sh ./
+COPY . .
 RUN chmod +x entrypoint.sh
 
 ENV PYTHONUTF8=1
