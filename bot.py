@@ -117,6 +117,12 @@ def _tg_api(method: str, payload: dict, timeout: int = 15) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            log.debug("Telegram 409 Conflict — another instance polling, will resolve")
+        else:
+            log.error("Telegram API %s failed: %s", method, exc)
+        return None
     except Exception as exc:
         log.error("Telegram API %s failed: %s", method, exc)
         return None
@@ -168,7 +174,8 @@ def _run_project(key: str) -> tuple[bool, str]:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         _last_run[key] = ts
         if result.returncode != 0:
-            snippet = (result.stderr or result.stdout or "no output")[:500]
+            raw = (result.stderr or result.stdout or "no output")[:500]
+            snippet = raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             return False, f"Exit {result.returncode}:\n<code>{snippet}</code>"
         return True, f"Done at {ts}"
     except subprocess.TimeoutExpired:
@@ -176,7 +183,8 @@ def _run_project(key: str) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, f"Command not found — is <code>uv</code> installed?"
     except Exception as exc:
-        return False, str(exc)
+        raw = str(exc).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return False, raw
 
 # ── Command handlers ──────────────────────────────────────────────────────────
 
