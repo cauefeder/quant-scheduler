@@ -210,7 +210,7 @@ def score_opportunities(
         total_possible_weight = sum(
             RANK_DECAY ** (r - 1) for r in range(1, total_traders_checked + 1)
         )
-        smart_weight = sum(RANK_DECAY ** (p.trader_rank - 1) for p in sig)
+        smart_weight = sum(RANK_DECAY ** max((p.trader_rank or 1) - 1, 0) for p in sig)
         count_signal = smart_weight / max(total_possible_weight, 1e-9)
 
         size_signal = min(mean_exposure / SIZE_ANCHOR, 1.0)
