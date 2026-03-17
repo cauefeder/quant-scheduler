@@ -159,6 +159,7 @@ def _run_project(key: str) -> tuple[bool, str]:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONPATH"] = str(cwd)  # ensures local modules (data/, models/, etc.) are importable
 
     try:
         result = subprocess.run(
