@@ -109,13 +109,13 @@ _last_run: dict[str, str] = {}
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
 
-def _tg_api(method: str, payload: dict) -> dict | None:
+def _tg_api(method: str, payload: dict, timeout: int = 15) -> dict | None:
     url = f"https://api.telegram.org/bot{TG_TOKEN}/{method}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception as exc:
         log.error("Telegram API %s failed: %s", method, exc)
@@ -135,7 +135,8 @@ def _send(text: str, chat_id: str | None = None) -> None:
 
 
 def _get_updates(offset: int) -> list[dict]:
-    result = _tg_api("getUpdates", {"offset": offset, "timeout": 30, "limit": 10})
+    # Socket timeout must exceed Telegram's long-poll timeout (30s) by a margin
+    result = _tg_api("getUpdates", {"offset": offset, "timeout": 30, "limit": 10}, timeout=35)
     if result and result.get("ok"):
         return result.get("result", [])
     return []
