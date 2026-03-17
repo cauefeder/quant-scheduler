@@ -82,7 +82,7 @@ def fetch_top_traders(
 
         for item in data:
             traders.append(Trader(
-                rank=item.get("rank") or len(traders) + 1,
+                rank=int(item.get("rank") or len(traders) + 1),
                 proxy_wallet=item.get("proxyWallet", ""),
                 username=item.get("userName") or (item.get("proxyWallet", "")[:8] + "..."),
                 pnl=float(item.get("pnl", 0)),

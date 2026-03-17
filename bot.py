@@ -174,7 +174,7 @@ def _run_project(key: str) -> tuple[bool, str]:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         _last_run[key] = ts
         if result.returncode != 0:
-            raw = (result.stderr or result.stdout or "no output")[:500]
+            raw = (result.stderr or result.stdout or "no output")[-1500:]
             snippet = raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             return False, f"Exit {result.returncode}:\n<code>{snippet}</code>"
         return True, f"Done at {ts}"
