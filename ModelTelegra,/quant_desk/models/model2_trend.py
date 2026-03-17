@@ -28,6 +28,10 @@ from plotly.subplots import make_subplots
 
 from data.fetcher import fetch_yf
 from config.settings import trend as trend_cfg
+from analytics.context import (
+    ContextResult, MarketStructure,
+    classify_market_structure, cross_signal_adjustment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,9 @@ class TrendResult:
     last_price: float
     signal_history: pd.DataFrame  # full classified data
     transition_detected: bool
+    context: ContextResult         # market structure classification
+    cross_adjustment: float        # vol×structure multiplier
+    cross_note: str                # plain-English cross-signal explanation
 
 
 @dataclass
@@ -408,6 +415,7 @@ def run_model2(
     tickers: Optional[Dict[str, str]] = None,
     timeframes: Optional[Dict[str, Dict]] = None,
     custom_ticker: Optional[str] = None,
+    vol_regime: Optional[str] = None,   # VolRegime.value from Model 1 for cross-signal
 ) -> Model2Result:
     """
     Execute Model 2 for all configured assets and timeframes.
@@ -474,6 +482,12 @@ def run_model2(
             resistance = float(classified["resistance"].iloc[-1])
             transition = bool(classified["transition"].iloc[-1])
 
+            # ── Context layer ──────────────────────────────────────────────
+            ctx = classify_market_structure(classified)
+            cross_mult, cross_note = cross_signal_adjustment(
+                ctx.structure, vol_regime or "Normal"
+            )
+
             result = TrendResult(
                 ticker=ticker,
                 name=name,
@@ -489,6 +503,9 @@ def run_model2(
                 last_price=last_price,
                 signal_history=classified,
                 transition_detected=transition,
+                context=ctx,
+                cross_adjustment=cross_mult,
+                cross_note=cross_note,
             )
 
             all_results[ticker][tf_name] = result
@@ -505,6 +522,11 @@ def run_model2(
                 "price": last_price,
                 "atr_pct": atr_pct_val,
                 "transition": transition,
+                "structure": ctx.structure.value,
+                "entry_quality": ctx.entry_quality,
+                "prob_adjustment": round(ctx.probability_adjustment * cross_mult, 2),
+                "context_note": ctx.note,
+                "cross_note": cross_note,
             })
 
             logger.info(

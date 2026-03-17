@@ -65,7 +65,10 @@ def run_full_pipeline(
 
     # --- Model 2: Multi-Asset Trends ---
     try:
-        m2: Model2Result = run_model2(custom_ticker=custom_ticker)
+        m2: Model2Result = run_model2(
+            custom_ticker=custom_ticker,
+            vol_regime=m1.regime.regime.value,  # cross-signal: vol context informs trend confidence
+        )
         logger.info(f"Model 2 complete: {len(m2.summary)} signals generated")
     except Exception as e:
         logger.error(f"Model 2 FAILED: {e}", exc_info=True)
