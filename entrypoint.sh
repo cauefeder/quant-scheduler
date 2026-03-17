@@ -30,4 +30,41 @@ else
     echo "[entrypoint] /run commands will skip missing project directories"
 fi
 
+# Generate HedgePoly config.toml from env vars (file is gitignored)
+HEDGEPOLY_CONFIG="/app/HedgePoly/prediction-market-analysis/config.toml"
+if [ ! -f "$HEDGEPOLY_CONFIG" ] && [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+    echo "[entrypoint] Generating HedgePoly config.toml from env vars..."
+    cat > "$HEDGEPOLY_CONFIG" <<TOML
+[paths]
+data_dir   = "/app/HedgePoly/prediction-market-analysis/data"
+output_dir = "/app/HedgePoly/prediction-market-analysis/output"
+
+[telegram]
+bot_token              = "${TELEGRAM_BOT_TOKEN}"
+allowed_chat_ids       = "${TELEGRAM_CHAT_ID}"
+report_interval_hours  = 24
+
+[analysis]
+monte_carlo_runs    = 10000
+drawdown_confidence = 0.95
+min_sample_size     = 30
+kelly_fraction      = 0.5
+
+[calibration]
+price_bins       = 20
+time_bins        = 10
+signal_threshold = 5.0
+
+[orderflow]
+min_market_volume     = 100
+large_order_percentile = 95
+
+[dashboard]
+host  = "0.0.0.0"
+port  = 5050
+debug = false
+TOML
+    echo "[entrypoint] config.toml written."
+fi
+
 exec python bot.py
