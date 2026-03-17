@@ -19,6 +19,7 @@ wheels/
 
 # ── Data & large files ────────────────────────────────────────────────────────
 data/
+!ModelTelegra,/quant_desk/data/
 data.zip
 *.zip
 *.tar.gz
