@@ -80,27 +80,12 @@ RUNNABLE: dict[str, dict] = {
                 "--with", "requests,python-dotenv", "python", "main.py"],
         "timeout": 180,
     },
-    "hedgepoly": {
-        "label": "HedgePoly Alpha Report",
-        "cwd": HEDGEPOLY_DIR,
-        "cmd": [UV, "run", "python", "send_report.py"],
-        "timeout": 120,
-    },
     "poly2": {
         "label": "Poly2 Kelly + Macro",
         "cwd": POLY2_DIR,
         "cmd": [UV, "run", "--no-project", "--python", "3.9",
                 "--with", "requests", "python", "polymarket_telegram_bot.py"],
         "timeout": 240,
-    },
-    "modeltelegra": {
-        "label": "ModelTelegra Quant Desk",
-        "cwd": MODEL_DIR,
-        "cmd": [UV, "run", "--no-project", "--python", "3.11",
-                "--with", "yfinance,python-telegram-bot,plotly,kaleido,"
-                          "pandas,numpy,scipy,aiohttp,python-dotenv",
-                "python", "main.py"],
-        "timeout": 360,
     },
 }
 
