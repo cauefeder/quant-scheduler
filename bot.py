@@ -87,6 +87,15 @@ RUNNABLE: dict[str, dict] = {
                 "--with", "requests", "python", "polymarket_telegram_bot.py"],
         "timeout": 240,
     },
+    "modeltelegra": {
+        "label": "ModelTelegra Quant Desk",
+        "cwd": MODEL_DIR,
+        "cmd": [UV, "run", "--no-project", "--python", "3.11",
+                "--with", "yfinance,python-telegram-bot,plotly,kaleido,"
+                          "pandas,numpy,scipy,aiohttp,python-dotenv",
+                "python", "main.py"],
+        "timeout": 360,
+    },
 }
 
 # Track last run times: project_key → ISO timestamp string
