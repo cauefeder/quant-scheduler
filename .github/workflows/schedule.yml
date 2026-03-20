@@ -32,10 +32,8 @@ jobs:
           }
           clone HedgePoly                          "HedgePoly"
           clone PolyTraders                        "PolyTraders"
-          # Add more repos here as you push them:
-          # clone Poly2                            "Poly2"
-          # clone ModelTelegra                     "ModelTelegra,"
-          # clone Poly                             "Poly"
+          clone Poly2                              "Poly2"
+          clone "ModelTelegra,"                    "ModelTelegra,"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -44,6 +42,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL:       "gemini-2.5-flash"
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
         run: |
