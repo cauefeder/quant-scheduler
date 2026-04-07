@@ -81,6 +81,15 @@ def _compute_ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
 
 
+def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Wilder's RSI (0-100). NaN bars filled with 50 (neutral)."""
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return (100 - (100 / (1 + rs))).fillna(50.0)
+
+
 def _compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Average True Range."""
     high = df["high"]
@@ -148,6 +157,17 @@ def classify_trend(
     vol_sma = out["volume"].rolling(vol_lookback).mean()
     rel_volume = out["volume"] / vol_sma.replace(0, np.nan)
 
+    # --- RSI(14) momentum oscillator ---
+    rsi = _compute_rsi(close, 14)
+    out["rsi"] = rsi
+
+    # --- EMA 56 (intermediate) and EMA 200 (long-term) ---
+    ema_56  = _compute_ema(close, 56)
+    ema_200 = _compute_ema(close, 200)
+    out["ema_56"]  = ema_56
+    out["ema_200"] = ema_200
+    out["ema_vs_200_pct"] = ((close - ema_200) / ema_200.replace(0, np.nan)).fillna(0.0)
+
     # --- Classification ---
     # Bull: vol_adj_spread > signal AND positive ROC AND spread > threshold
     # Bear: vol_adj_spread < signal AND negative ROC
@@ -173,14 +193,43 @@ def classify_trend(
     # --- Anti-repaint: use shifted signals (closed bars only) ---
     out["signal"] = signals.shift(1).fillna(TrendState.HOLD.value)
 
-    # --- Trend strength (0-100) ---
-    # Based on: |spread|, ROC magnitude, volume confirmation
-    abs_spread_norm = vol_adj_spread.abs().clip(0, 5) / 5 * 40  # 0-40 points
-    roc_norm = roc_10.abs().clip(0, 0.10) / 0.10 * 30  # 0-30 points
-    vol_norm = rel_volume.clip(0, 3) / 3 * 20  # 0-20 points
-    roc20_bonus = (roc_20.abs() > roc_10.abs()).astype(float) * 10  # momentum building
+    # --- 3-EMA alignment score (0-25 pts) ---
+    # Full alignment: EMA12 > EMA56 > EMA200 (bull) or EMA12 < EMA56 < EMA200 (bear)
+    # → all three momentum layers agree; strongest trend confirmation
+    full_align_bull = (ema_fast > ema_56) & (ema_56 > ema_200)
+    full_align_bear = (ema_fast < ema_56) & (ema_56 < ema_200)
+    # Partial: price at least on correct side of EMA200
+    partial_align = (
+        (~full_align_bull) & (~full_align_bear) & (
+            (bull_mask & (close > ema_200)) | (bear_mask & (close < ema_200))
+        )
+    )
+    ema_alignment_score = pd.Series(0.0, index=out.index)
+    ema_alignment_score[full_align_bull | full_align_bear] = 25.0
+    ema_alignment_score[partial_align] = 10.0
+    out["ema_alignment"] = ema_alignment_score
 
-    out["strength"] = (abs_spread_norm + roc_norm + vol_norm + roc20_bonus).clip(0, 100)
+    # --- RSI confirmation bonus (0-15 pts) ---
+    # RSI > 60 in a bull signal = strong momentum confirmation
+    # RSI < 40 in a bear signal = strong downside momentum confirmation
+    rsi_bonus = pd.Series(0.0, index=out.index)
+    rsi_bonus[bull_mask & (rsi > 60)] = 15.0
+    rsi_bonus[bull_mask & (rsi > 50) & (rsi <= 60)] = 8.0
+    rsi_bonus[bear_mask & (rsi < 40)] = 15.0
+    rsi_bonus[bear_mask & (rsi < 50) & (rsi >= 40)] = 8.0
+
+    # --- Trend strength (0-100) ---
+    # Base: |spread|(40) + ROC(30) + Volume(20) + momentum building(10) = 100
+    # Bonus confirmations (EMA alignment + RSI) push toward 100 faster when aligned
+    abs_spread_norm = vol_adj_spread.abs().clip(0, 5) / 5 * 40  # 0-40 points
+    roc_norm = roc_10.abs().clip(0, 0.10) / 0.10 * 30            # 0-30 points
+    vol_norm = rel_volume.clip(0, 3) / 3 * 20                    # 0-20 points
+    roc20_bonus = (roc_20.abs() > roc_10.abs()).astype(float) * 10  # 0-10 momentum building
+
+    out["strength"] = (
+        abs_spread_norm + roc_norm + vol_norm + roc20_bonus +
+        ema_alignment_score + rsi_bonus
+    ).clip(0, 100)
 
     # --- Regime duration (consecutive bars in same state) ---
     regime_bars = pd.Series(0, index=out.index)
@@ -264,13 +313,14 @@ def create_trend_chart(
     Green = Bullish, Red = Bearish, Blue = Hold.
     """
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
-        row_heights=[0.6, 0.2, 0.2],
+        row_heights=[0.50, 0.18, 0.17, 0.15],
         subplot_titles=(
             f"{name} ({ticker}) — {timeframe}",
             "Trend Strength",
+            "RSI (14)",
             "Volume",
         ),
     )
@@ -312,7 +362,7 @@ def create_trend_chart(
         row=1, col=1,
     )
 
-    # EMAs
+    # EMAs — fast/slow (existing) + EMA 56 + EMA 200
     fig.add_trace(
         go.Scatter(
             x=df.index, y=df["ema_fast"],
@@ -329,6 +379,24 @@ def create_trend_chart(
         ),
         row=1, col=1,
     )
+    if "ema_56" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df["ema_56"],
+                mode="lines", line=dict(color="cyan", width=1, dash="dot"),
+                name="EMA 56", showlegend=True,
+            ),
+            row=1, col=1,
+        )
+    if "ema_200" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df["ema_200"],
+                mode="lines", line=dict(color="yellow", width=2),
+                name="EMA 200", showlegend=True,
+            ),
+            row=1, col=1,
+        )
 
     # Support / Resistance
     fig.add_trace(
@@ -368,6 +436,20 @@ def create_trend_chart(
     fig.add_hline(y=65, line_dash="dash", line_color="gray", row=2, col=1)
     fig.add_hline(y=35, line_dash="dash", line_color="gray", row=2, col=1)
 
+    # --- RSI (14) ---
+    if "rsi" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df["rsi"],
+                mode="lines", line=dict(color="magenta", width=1),
+                name="RSI 14", showlegend=False,
+            ),
+            row=3, col=1,
+        )
+        fig.add_hline(y=70, line_dash="dash", line_color="rgba(255,68,68,0.5)", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="rgba(52,211,153,0.5)", row=3, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color="rgba(150,150,150,0.4)", row=3, col=1)
+
     # --- Volume ---
     vol_colors = ["green" if c >= o else "red" for c, o in zip(df["close"], df["open"])]
     fig.add_trace(
@@ -379,7 +461,7 @@ def create_trend_chart(
             name="Volume",
             showlegend=False,
         ),
-        row=3, col=1,
+        row=4, col=1,
     )
 
     # Mark transitions
@@ -511,6 +593,9 @@ def run_model2(
             all_results[ticker][tf_name] = result
 
             # Summary row
+            rsi_val = float(classified["rsi"].iloc[-1]) if "rsi" in classified.columns else None
+            ema_vs_200 = float(classified["ema_vs_200_pct"].iloc[-1]) * 100 if "ema_vs_200_pct" in classified.columns else None
+            ema_align = float(classified["ema_alignment"].iloc[-1]) if "ema_alignment" in classified.columns else 0.0
             summary.append({
                 "ticker": ticker,
                 "name": name,
@@ -527,6 +612,9 @@ def run_model2(
                 "prob_adjustment": round(ctx.probability_adjustment * cross_mult, 2),
                 "context_note": ctx.note,
                 "cross_note": cross_note,
+                "rsi": round(rsi_val, 1) if rsi_val is not None else None,
+                "ema_vs_200_pct": round(ema_vs_200, 2) if ema_vs_200 is not None else None,
+                "ema_alignment": ema_align,
             })
 
             logger.info(

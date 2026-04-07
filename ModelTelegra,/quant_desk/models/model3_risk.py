@@ -208,6 +208,31 @@ def _score_trend_signal(trend_result) -> float:
     if trend_result.transition_detected:
         score -= 15
 
+    # EMA 200 long-term confirmation:
+    # Price above EMA200 on a bullish signal = trend aligned with long-term structure (+8)
+    # Price below EMA200 on a bearish signal = same (+8)
+    # Price against EMA200 = penalty (-8) — fade caution
+    try:
+        ema_vs_200 = float(trend_result.signal_history["ema_vs_200_pct"].iloc[-1])
+        state = trend_result.current_state.value
+        if (state == "Bullish" and ema_vs_200 > 0.0) or (state == "Bearish" and ema_vs_200 < 0.0):
+            score += 8   # aligned with long-term structure
+        elif (state == "Bullish" and ema_vs_200 < -0.03) or (state == "Bearish" and ema_vs_200 > 0.03):
+            score -= 8   # >3% against EMA200 — counter-trend, reduce confidence
+    except (KeyError, IndexError):
+        pass
+
+    # RSI extremes reduce reliability (overbought bull / oversold bear = less room to run)
+    try:
+        rsi_val = float(trend_result.signal_history["rsi"].iloc[-1])
+        if trend_result.current_state.value == "Bullish" and rsi_val > 75:
+            score -= 10  # overbought — don't chase
+        elif trend_result.current_state.value == "Bearish" and rsi_val < 25:
+            score -= 10  # oversold — bounce risk
+
+    except (KeyError, IndexError):
+        pass
+
     return max(0, min(100, score))
 
 

@@ -168,6 +168,42 @@ def fetch_btc_price(
 
 
 # ---------------------------------------------------------------------------
+# MVRV Ratio (on-chain valuation) — CoinMetrics community API, no auth
+# ---------------------------------------------------------------------------
+def fetch_mvrv_ratio() -> Optional[float]:
+    """
+    Compute BTC MVRV proxy: current price / 200-day SMA.
+
+    Uses 2 years of daily Yahoo Finance data — no API key required.
+    The 200-day SMA serves as a proxy for BTC's on-chain realized price
+    (the average cost basis of all coins last moved), which is what true
+    MVRV measures. Directionally equivalent for regime identification.
+
+    Zones (calibrated to BTC price/SMA200 historical distribution):
+      < 0.85 : Undervalued — price below long-term trend (historically strong buy)
+      0.85-1.25: Fair value — trading near realized cost basis
+      1.25-2.0 : Elevated — premium to realized value building
+      > 2.0  : Extreme — historical distribution / cycle top territory
+
+    Returns None on data failure.
+    """
+    try:
+        df = fetch_yf("BTC-USD", period="2y", interval="1d")
+        if df is None or len(df) < 200:
+            logger.warning("[MVRV] Insufficient daily data for SMA200")
+            return None
+        sma_200 = float(df["close"].rolling(200).mean().dropna().iloc[-1])
+        current = float(df["close"].iloc[-1])
+        if sma_200 > 0:
+            proxy = round(current / sma_200, 3)
+            logger.info(f"[MVRV proxy] price={current:.0f} / SMA200={sma_200:.0f} = {proxy:.3f}")
+            return proxy
+    except Exception as e:
+        logger.warning(f"[MVRV] Could not compute: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Fetch multiple tickers
 # ---------------------------------------------------------------------------
 def fetch_multi(

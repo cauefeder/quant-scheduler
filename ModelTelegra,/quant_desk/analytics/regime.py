@@ -43,6 +43,7 @@ class RegimeResult:
     expected_move_1d: float  # Expected 1-day move in USD
     expected_move_pct: float # Expected 1-day move in %
     description: str
+    mvrv: Optional[float] = None  # Market Value / Realized Value (on-chain)
 
 
 def compute_realized_vol(

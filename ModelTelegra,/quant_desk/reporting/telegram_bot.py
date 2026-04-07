@@ -103,6 +103,27 @@ def format_daily_report(
         "",
     ])
 
+    # --- MVRV proxy (price / SMA200) ---
+    if regime.mvrv is not None:
+        mvrv = regime.mvrv
+        if mvrv < 0.85:
+            mvrv_zone = "Undervalued — below long-term cost basis (accumulate)"
+            mvrv_emoji = "🟢"
+        elif mvrv < 1.25:
+            mvrv_zone = "Fair value — near realized cost basis"
+            mvrv_emoji = "🟡"
+        elif mvrv < 2.0:
+            mvrv_zone = "Elevated — premium to cost basis building"
+            mvrv_emoji = "🟠"
+        else:
+            mvrv_zone = "Extreme — historical distribution / cycle-top territory"
+            mvrv_emoji = "🔴"
+        lines.extend([
+            f"📐 MVRV (price/SMA200 proxy):",
+            f"   {mvrv_emoji} {mvrv:.2f}x — {mvrv_zone}",
+            "",
+        ])
+
     # --- GEX Section ---
     lines.extend([
         f"🏗️ Options Structure (GEX):",
@@ -150,14 +171,23 @@ def format_daily_report(
     lines.append("📊 MULTI-ASSET TREND SCAN:")
     lines.append("")
 
-    # Group by timeframe for compact display
+    # Group by timeframe for compact display — includes RSI and EMA200 position
     for row in m2.summary:
         if row["timeframe"] == "1h":
             emoji = _TREND_EMOJI.get(TrendState(row["state"]), "⚪")
             alert = " ⚠️" if row.get("transition", False) else ""
+            rsi_val = row.get("rsi")
+            ema_pct = row.get("ema_vs_200_pct")
+            rsi_str = f" | RSI:{rsi_val:.0f}" if rsi_val is not None else ""
+            if ema_pct is not None:
+                sign = "+" if ema_pct >= 0 else ""
+                ema_str = f" | EMA200:{sign}{ema_pct:.1f}%"
+            else:
+                ema_str = ""
             lines.append(
                 f"   {emoji} {row['name']}: {row['state']} "
-                f"(Str:{row['strength']:.0f} | Pers:{row['persistence']:.0%}){alert}"
+                f"(Str:{row['strength']:.0f} | Pers:{row['persistence']:.0%}"
+                f"{rsi_str}{ema_str}){alert}"
             )
 
     lines.append("")
@@ -177,7 +207,7 @@ def format_daily_report(
         f"🛡️ Portfolio Risk Score: {m3.portfolio_risk:.0f}/100",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━",
-        "Quant Desk v1.0 | Not financial advice",
+        "Quant Desk v2.0 | RSI + EMA56/200 + MVRV | Not financial advice",
         "━━━━━━━━━━━━━━━━━━━━━━━",
     ])
 

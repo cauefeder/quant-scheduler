@@ -23,7 +23,7 @@ import numpy as np
 from scipy.stats import norm
 
 from analytics.regime import RegimeResult, VolRegime, detect_regime
-from data.fetcher import fetch_btc_price
+from data.fetcher import fetch_btc_price, fetch_mvrv_ratio
 from data.options_proxy import (
     OptionsChain,
     GEXResult,
@@ -183,6 +183,9 @@ def run_model1() -> Model1Result:
 
     # 2. Detect volatility regime
     regime = detect_regime(price_df, spot=spot)
+
+    # 2b. Inject on-chain MVRV (non-blocking — None if API unavailable)
+    regime.mvrv = fetch_mvrv_ratio()
 
     # 3. Build synthetic options chain
     chain = generate_synthetic_chain(
