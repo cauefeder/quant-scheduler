@@ -36,6 +36,8 @@ class TradeDecision(str, Enum):
     STRONG_BUY = "Strong Buy"
     SPECULATIVE_VOL_PLAY = "Speculative Vol Play"
     TREND_CONTINUATION = "Trend Continuation"
+    SHORT_SELL = "Short Sell"              # high-conviction bearish trend
+    POSITIVE_EV_STRADDLE = "Positive EV Straddle"  # straddle with EV>0, below full threshold
     NO_TRADE = "No Trade"
     CAPITAL_PRESERVATION = "Capital Preservation Mode"
 
@@ -271,16 +273,19 @@ def integrate_signals(
     # Combined BTC signal
     btc_combined = vol_score * 0.6 + btc_trend_score * 0.4
 
-    # Risk metrics for straddle
+    # Risk metrics for straddle.
+    # avg_win uses expected_move × 1.4 (captures BOTH up and down legs at 70% efficiency)
+    # A straddle profits if BTC moves >cost in either direction — it's a 2-way payoff.
     straddle_risk = compute_risk_metrics(
         win_prob=m1.straddle.prob_of_profit,
-        avg_win=m1.regime.expected_move_1d * 0.7,  # conservative: capture 70% of move
+        avg_win=m1.regime.expected_move_1d * 1.4,   # both-direction payoff (was 0.7 one-sided — bug)
         avg_loss=m1.straddle.straddle_cost,
         capital=capital,
     )
 
-    # Asymmetry
-    asymmetry = straddle_risk.risk_reward_ratio
+    # Use Model 1's own straddle R/R (2σ potential gain / cost) as the asymmetry signal.
+    # This is more accurate than Kelly R/R for a non-directional instrument.
+    asymmetry = m1.straddle.risk_reward_ratio
 
     # Risk score (0-100, lower = safer)
     risk_score = (
@@ -289,7 +294,13 @@ def integrate_signals(
         straddle_risk.tail_risk_exposure * 0.3
     )
 
-    # Decision logic for BTC
+    # Positive EV flag: expected move already exceeds straddle cost → structural edge
+    positive_ev = m1.straddle.expected_value > 0
+
+    # Decision logic for BTC — three tiers:
+    #   Tier 1: Full signal — score + asymmetry + risk all pass → directional or vol play
+    #   Tier 2: Positive EV with sufficient signal → alert as POSITIVE_EV_STRADDLE
+    #   Tier 3: Risk blowout → capital preservation
     if (
         btc_combined > risk_cfg.min_signal_strength and
         asymmetry > risk_cfg.min_asymmetry_ratio and
@@ -301,6 +312,12 @@ def integrate_signals(
                 f"Vol regime ({m1.regime.regime.value}) favors straddle. "
                 f"Expected move > cost. Score={btc_combined:.0f}."
             )
+        elif btc_trend_1h and btc_trend_1h.current_state == TrendState.BEARISH and btc_trend_score > 60:
+            decision = TradeDecision.SHORT_SELL
+            reasoning = (
+                f"Strong bearish trend confirmed by vol model. "
+                f"Trend strength={btc_trend_score:.0f}, Vol score={vol_score:.0f}."
+            )
         elif btc_trend_1h and btc_trend_1h.current_state == TrendState.BULLISH and btc_trend_score > 60:
             decision = TradeDecision.STRONG_BUY
             reasoning = (
@@ -310,20 +327,32 @@ def integrate_signals(
         else:
             decision = TradeDecision.TREND_CONTINUATION
             reasoning = f"Moderate opportunity. Combined score={btc_combined:.0f}."
+    elif positive_ev and btc_combined > 45 and risk_score < risk_cfg.max_risk_score:
+        # Straddle has positive expected value even if signal score is below full threshold.
+        # Surface as a watch/lite position — expected move > cost is the key structural edge.
+        decision = TradeDecision.POSITIVE_EV_STRADDLE
+        reasoning = (
+            f"Straddle EV+: expected move (${m1.regime.expected_move_1d:,.0f}) > "
+            f"cost (${m1.straddle.straddle_cost:,.0f}). "
+            f"R/R={asymmetry:.2f}x. Signal={btc_combined:.0f} (sub-threshold but watchable)."
+        )
     elif risk_score > 80:
         decision = TradeDecision.CAPITAL_PRESERVATION
         reasoning = f"Risk too high ({risk_score:.0f}). Preserve capital."
     else:
         decision = TradeDecision.NO_TRADE
         reasoning = (
-            f"Thresholds not met. Signal={btc_combined:.0f} "
+            f"No edge. Signal={btc_combined:.0f} "
             f"(need>{risk_cfg.min_signal_strength:.0f}), "
-            f"Asymmetry={asymmetry:.2f} (need>{risk_cfg.min_asymmetry_ratio:.1f})."
+            f"Asymmetry={asymmetry:.2f} (need>{risk_cfg.min_asymmetry_ratio:.1f}), "
+            f"EV={'positive' if positive_ev else 'negative'}."
         )
 
     alert_worthy = decision in (
         TradeDecision.STRONG_BUY,
         TradeDecision.SPECULATIVE_VOL_PLAY,
+        TradeDecision.SHORT_SELL,
+        TradeDecision.POSITIVE_EV_STRADDLE,
     )
 
     btc_signal = TradeSignal(
@@ -364,15 +393,28 @@ def integrate_signals(
         t_asymmetry = t_risk.risk_reward_ratio
         t_risk_score = (1 - t_risk.win_probability) * 50 + t_risk.tail_risk_exposure * 0.5
 
-        if t_score > risk_cfg.min_signal_strength and t_asymmetry > 1.2:
+        if t_score >= risk_cfg.min_signal_strength and t_asymmetry > risk_cfg.min_asymmetry_ratio:
             if tr.current_state == TrendState.BULLISH:
                 t_decision = TradeDecision.TREND_CONTINUATION
             elif tr.current_state == TrendState.BEARISH:
-                t_decision = TradeDecision.CAPITAL_PRESERVATION
+                # High-conviction bearish = SHORT opportunity, not just capital preservation
+                t_decision = TradeDecision.SHORT_SELL
             else:
                 t_decision = TradeDecision.NO_TRADE
         else:
             t_decision = TradeDecision.NO_TRADE
+
+        # Enrich reasoning with RSI and EMA200 context
+        try:
+            rsi_val = float(tr.signal_history["rsi"].iloc[-1])
+            ema_pct = float(tr.signal_history["ema_vs_200_pct"].iloc[-1]) * 100
+            t_reasoning = (
+                f"{tr.current_state.value} | Str:{tr.strength:.0f} | "
+                f"Pers:{tr.persistence_prob:.0%} | RSI:{rsi_val:.0f} | "
+                f"EMA200:{ema_pct:+.1f}%"
+            )
+        except (KeyError, IndexError):
+            t_reasoning = f"{tr.current_state.value} trend, strength={tr.strength:.0f}, persistence={tr.persistence_prob:.0%}"
 
         t_signal = TradeSignal(
             decision=t_decision,
@@ -385,13 +427,20 @@ def integrate_signals(
             target_level=tr.resistance,
             stop_loss=tr.last_price - atr_stop if tr.current_state == TrendState.BULLISH else tr.last_price + atr_stop,
             risk_metrics=t_risk,
-            reasoning=f"{tr.current_state.value} trend, strength={tr.strength:.0f}, persistence={tr.persistence_prob:.0%}",
-            alert_worthy=(t_decision != TradeDecision.NO_TRADE and t_score > 70),
+            reasoning=t_reasoning,
+            # Surface any signal >= min_signal_strength — was wrongly gated at >70
+            alert_worthy=(t_decision != TradeDecision.NO_TRADE and t_score >= risk_cfg.min_signal_strength),
         )
 
         trend_signals[ticker] = t_signal
 
         if t_signal.alert_worthy:
+            try:
+                rsi_v = float(tr.signal_history["rsi"].iloc[-1])
+                ema_v = float(tr.signal_history["ema_vs_200_pct"].iloc[-1]) * 100
+            except (KeyError, IndexError):
+                rsi_v = None
+                ema_v = None
             best_opportunities.append({
                 "ticker": ticker,
                 "name": tr.name,
@@ -399,6 +448,8 @@ def integrate_signals(
                 "strength": t_score,
                 "confidence": t_signal.confidence,
                 "state": tr.current_state.value,
+                "rsi": rsi_v,
+                "ema_pct": ema_v,
             })
 
     # Sort opportunities by strength

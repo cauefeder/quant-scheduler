@@ -112,9 +112,10 @@ class TrendConfig:
 @dataclass(frozen=True)
 class RiskConfig:
     # Signal thresholds to trigger alert
-    min_signal_strength: float = 60.0
-    min_asymmetry_ratio: float = 1.5
-    max_risk_score: float = 70.0  # above this = too risky
+    min_signal_strength: float = 55.0   # was 60 — recalibrated: 60 was too strict for normal vol
+    min_asymmetry_ratio: float = 1.0    # was 1.5 — trend asymmetry is always 1.5 (3xATR/2xATR);
+                                        #            straddle R/R in low-vol is typically 1.0-1.6
+    max_risk_score: float = 75.0        # was 70 — BTC straddle was blocked by 0.2 pts (70.2 vs 70)
     # Position sizing (fraction of capital)
     max_position_pct: float = 0.02  # 2% max risk per trade
     # Kelly criterion dampening factor

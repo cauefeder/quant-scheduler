@@ -30,6 +30,8 @@ _DECISION_EMOJI = {
     TradeDecision.STRONG_BUY: "🟢",
     TradeDecision.SPECULATIVE_VOL_PLAY: "⚡",
     TradeDecision.TREND_CONTINUATION: "📈",
+    TradeDecision.SHORT_SELL: "🔴",
+    TradeDecision.POSITIVE_EV_STRADDLE: "🎯",
     TradeDecision.NO_TRADE: "⏸️",
     TradeDecision.CAPITAL_PRESERVATION: "🛡️",
 }
@@ -196,9 +198,13 @@ def format_daily_report(
     if m3.best_opportunities:
         lines.append("🏆 TOP OPPORTUNITIES:")
         for i, opp in enumerate(m3.best_opportunities[:5], 1):
+            d_emoji = _DECISION_EMOJI.get(TradeDecision(opp["decision"]), "")
+            rsi_str = f" | RSI:{opp['rsi']:.0f}" if opp.get("rsi") else ""
+            ema_str = f" | EMA200:{opp['ema_pct']:+.1f}%" if opp.get("ema_pct") is not None else ""
             lines.append(
-                f"   {i}. {opp['name']} — {opp['decision']} "
-                f"(Strength: {opp['strength']:.0f})"
+                f"   {i}. {d_emoji} {opp['name']} — {opp['decision']} "
+                f"(Str:{opp['strength']:.0f} | Conf:{opp['confidence']:.0f}%"
+                f"{rsi_str}{ema_str})"
             )
         lines.append("")
 
