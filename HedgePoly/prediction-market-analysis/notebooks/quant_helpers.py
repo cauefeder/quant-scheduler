@@ -35,7 +35,6 @@ def clean_df(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     df = df.ffill()
     # Drop leading NaNs (rows before first valid close)
     df = df.dropna(subset=["close"])
-    df = df.loc[df["close"].first_valid_index():]
     # Row count assertion
     min_rows = ASSETS[ticker]["min_rows"]
     assert len(df) >= min_rows, (
@@ -79,7 +78,8 @@ def add_features(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         (df["high"] - prev_close).abs(),
         (df["low"]  - prev_close).abs(),
     ], axis=1).max(axis=1)
-    df["ATR_14"] = tr.ewm(span=14, adjust=False).mean()
+    # Wilder's ATR: alpha=1/14 => com=13 (NOT span=14 which gives alpha=2/15)
+    df["ATR_14"] = tr.ewm(com=13, adjust=False).mean()
     df["VR"] = df["ATR_14"] / df["close"]
     df["VR_rank"] = (
         df["VR"]

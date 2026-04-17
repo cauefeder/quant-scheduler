@@ -13,7 +13,7 @@ from quant_helpers import (
     fit_har_model,
     fit_xgb_signal,
     compute_kelly,
-    build_summary_row, build_telegram_html,
+    build_summary_row, build_telegram_html, build_summary_table_text,
 )
 
 
@@ -270,9 +270,21 @@ def test_kelly_formula_exact():
 # TASK 8: Report Builder tests
 # ---------------------------------------------------------------------------
 
+def test_xgb_no_lookahead_in_train():
+    """xgb_signal must be NaN for the training partition (first 80%)."""
+    df = _make_ohlcv(n=1300)
+    df = add_features(df, "SPY")
+    result, meta = fit_xgb_signal(df, return_meta=True)
+    n_train = meta["split_idx"]
+    for col in ["xgb_signal", "p_bearish", "p_neutral", "p_bullish"]:
+        assert result[col].iloc[:n_train].isna().all(), (
+            f"{col} must be NaN in the training partition"
+        )
+
+
 def test_build_summary_row_keys():
     row = build_summary_row("SPY", "Trending", "Expanding", "LONG", 0.67, 8.5)
-    for key in ["ticker", "regime", "vol_regime", "side", "p_win", "kelly_pct"]:
+    for key in ["ticker", "regime", "vol_regime", "side", "signal_label", "p_win", "kelly_pct"]:
         assert key in row
 
 
@@ -293,3 +305,16 @@ def test_telegram_html_is_valid_html():
     html = build_telegram_html(signals, date_str="2026-04-16")
     assert html.startswith("<")
     assert "<b>" in html or "<code>" in html
+
+
+def test_summary_table_text_contains_all_tickers():
+    signals = [
+        build_summary_row("SPY",      "Trending",  "Expanding",   "LONG",  0.67, 8.5),
+        build_summary_row("BTC-USD",  "Choppy",    "Contracting", "FLAT",  0.51, 0.0),
+        build_summary_row("GC=F",     "Ranging",   "Expanding",   "LONG",  0.61, 5.5),
+        build_summary_row("EURUSD=X", "Ranging",   "Contracting", "SHORT", 0.58, 4.0),
+    ]
+    text = build_summary_table_text(signals, date_str="2026-04-17")
+    for ticker in ["SPY", "BTC-USD", "GC=F", "EURUSD=X"]:
+        assert ticker in text
+    assert "2026-04-17" in text
