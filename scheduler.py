@@ -14,12 +14,13 @@ Modes:
 
 Projects orchestrated:
   1. HedgePoly      — Polymarket calibration alpha (400M-trade historical edge)
-  2. Poly2/Kelly    — Gemini AI + Kelly criterion live opportunities
-  3. Poly2/Macro1   — Polymarket macro intelligence (Fed, geopolitics, crypto)
-  4. Poly2/Macro2   — Polymarket macro deep intelligence
-  5. ModelTelegra   — Quant Desk: BTC vol, multi-asset trends, risk signals
-  6. Poly           — Kelly position scraper (output forwarded to Telegram)
-  7. PolyTraders    — Smart-money copy-trade signals (leaderboard + Kelly)
+  2. Global Macro   — 4-layer quant stack: regime + HAR vol + XGBoost + Half-Kelly (SPY/BTC/GC/FX)
+  3. Poly2/Kelly    — Gemini AI + Kelly criterion live opportunities
+  4. Poly2/Macro1   — Polymarket macro intelligence (Fed, geopolitics, crypto)
+  5. Poly2/Macro2   — Polymarket macro deep intelligence
+  6. ModelTelegra   — Quant Desk: BTC vol, multi-asset trends, risk signals
+  7. Poly           — Kelly position scraper (output forwarded to Telegram)
+  8. PolyTraders    — Smart-money copy-trade signals (leaderboard + Kelly)
 """
 
 from __future__ import annotations
@@ -90,6 +91,15 @@ PROJECTS: list[dict] = [
         "cmd": [UV, "run", "python", "send_report.py"],
         "timeout": 120,
         "capture_to_telegram": False,  # sends to Telegram natively
+    },
+    {
+        # Four-layer quant stack: Regime → HAR-OLS vol → XGBoost direction → Half-Kelly sizing
+        # Assets: SPY, BTC-USD, GC=F, EURUSD=X (5y daily, yfinance)
+        "name": "Global Macro Quant Report",
+        "cwd": HEDGEPOLY_DIR,
+        "cmd": [UV, "run", "python", "notebooks/run_report.py"],
+        "timeout": 300,
+        "capture_to_telegram": False,  # sends to Telegram natively via httpx
     },
     {
         # Poly2 scripts use type hints requiring Python 3.9+ — use uv's managed Python
