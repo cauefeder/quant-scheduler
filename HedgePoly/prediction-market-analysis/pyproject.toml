@@ -22,6 +22,12 @@ dependencies = [
     "web3>=6.0.0",
     "simple-term-menu>=1.6.0",
     "python-dotenv>=1.2.1",
+    "yfinance>=1.2.0",
+    "xgboost>=2.0",
+    "statsmodels>=0.14.6",
+    "scikit-learn>=1.6.1",
+    "jupyter>=1.1.1",
+    "ipykernel>=6.31.0",
 ]
 
 [dependency-groups]
