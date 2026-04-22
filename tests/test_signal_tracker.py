@@ -203,3 +203,64 @@ def test_resolve_polymarket_skips_open_markets(fresh_tracker):
                       return_value=_fake_gamma_response(closed=False)):
         resolved = fresh_tracker.resolve_polymarket_signals()
     assert resolved == 0
+
+
+def test_resolve_straddle_win(fresh_tracker):
+    """move=8% > breakeven=5% (straddle_cost 4% + cost_estimate 1%) → WIN."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="straddle", direction="STRADDLE",
+        estimated_edge=0.02, market_price=70000.0, ticker="BTC-USD",
+        kelly_bet=100.0, cost_estimate=0.01,
+        raw_features={"straddle_cost": 0.04},
+    )
+    with patch.object(fresh_tracker, "_fetch_btc_price_at",
+                      return_value=70000.0 * 1.08):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    # move/breakeven = 0.08/0.05 = 1.6, pnl = 100 * (1.6 - 1) = 60
+    assert row["actual_pnl"] == pytest.approx(60.0, rel=1e-3)
+
+
+def test_resolve_straddle_loss_capped_at_premium(fresh_tracker):
+    """move=0 → loss capped at -kelly_bet (premium outlay)."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="straddle", direction="STRADDLE",
+        estimated_edge=0.02, market_price=70000.0, ticker="BTC-USD",
+        kelly_bet=100.0, cost_estimate=0.01,
+        raw_features={"straddle_cost": 0.04},
+    )
+    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=70000.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "LOSS"
+    assert row["actual_pnl"] == pytest.approx(-100.0)
+
+
+def test_resolve_trend_long_win(fresh_tracker):
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="trend_direction", direction="LONG",
+        estimated_edge=0.01, market_price=70000.0, ticker="BTC-USD",
+        kelly_bet=100.0,
+        raw_features={"timeframe": "1D"},
+    )
+    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=72100.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    # change = 2100/70000 = 0.03 → pnl = 100 * 0.03 = 3
+    assert row["actual_pnl"] == pytest.approx(3.0, rel=1e-3)
+
+
+def test_resolve_trend_short_loss(fresh_tracker):
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="trend_direction", direction="SHORT",
+        estimated_edge=0.01, market_price=70000.0, ticker="BTC-USD",
+        kelly_bet=100.0,
+        raw_features={"timeframe": "1H"},
+    )
+    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=72100.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "LOSS"
+    assert row["actual_pnl"] == pytest.approx(-3.0, rel=1e-3)

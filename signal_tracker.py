@@ -323,3 +323,110 @@ def resolve_polymarket_signals() -> int:
         time.sleep(0.2)
 
     return resolved_count
+
+
+# ── ModelTelegra resolution ──────────────────────────────────────────────────
+
+# Bars-ahead by signal timeframe — how far in the future to look up the realised price.
+_TREND_HORIZONS_HOURS = {"1H": 24, "1D": 24 * 5, "1W": 24 * 30}
+
+
+def _fetch_btc_price_at(timestamp: datetime) -> float | None:
+    """Fetch the BTC-USD spot price at (or just after) the given UTC timestamp via yfinance."""
+    try:
+        import yfinance as yf  # local import — yfinance is heavy
+    except ImportError:
+        log.warning("yfinance not installed — cannot resolve ModelTelegra signals")
+        return None
+    try:
+        end = timestamp.replace(microsecond=0)
+        # 24h window centered on target; yfinance returns hourly bars
+        ticker = yf.Ticker("BTC-USD")
+        hist = ticker.history(
+            start=end.strftime("%Y-%m-%d"),
+            end=(end.replace(hour=23, minute=59)).strftime("%Y-%m-%d"),
+            interval="1h",
+        )
+        if hist.empty:
+            return None
+        return float(hist["Close"].iloc[-1])
+    except Exception as exc:  # noqa: BLE001
+        log.debug("yfinance fetch failed: %s", exc)
+        return None
+
+
+def resolve_modeltelegra_signals() -> int:
+    """Resolve all unresolved straddle + trend signals via yfinance. Returns count resolved."""
+    from datetime import timedelta
+
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, signal_type, direction, market_price, kelly_bet,
+                   cost_estimate, raw_features, created_at
+            FROM signals
+            WHERE outcome IS NULL
+              AND signal_type IN ('straddle', 'trend_direction')
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (_RESOLVE_BATCH_LIMIT,),
+        ).fetchall()
+
+    resolved_count = 0
+    for row in rows:
+        created = datetime.fromisoformat(row["created_at"])
+        raw = json.loads(row["raw_features"]) if row["raw_features"] else {}
+
+        if row["signal_type"] == "straddle":
+            target_time = created + timedelta(hours=24)
+            future_price = _fetch_btc_price_at(target_time)
+            if future_price is None or future_price <= 0:
+                continue
+            move = abs(future_price - row["market_price"]) / row["market_price"]
+            breakeven = float(raw.get("straddle_cost", 0.04)) + (row["cost_estimate"] or 0.0)
+            if breakeven <= 0:
+                continue
+            bet = row["kelly_bet"] or 0.0
+            if move > breakeven:
+                outcome = "WIN"
+                pnl = bet * (move / breakeven - 1.0)
+            else:
+                outcome = "LOSS"
+                pnl = max(-bet, -bet * (1.0 - move / breakeven))
+            resolution_data = {"future_price": future_price, "move": move, "breakeven": breakeven}
+
+        else:  # trend_direction
+            tf = raw.get("timeframe", "1D")
+            hours_ahead = _TREND_HORIZONS_HOURS.get(tf, 24)
+            target_time = created + timedelta(hours=hours_ahead)
+            future_price = _fetch_btc_price_at(target_time)
+            if future_price is None or future_price <= 0:
+                continue
+            change = (future_price - row["market_price"]) / row["market_price"]
+            went_up = change > 0
+            is_win = (row["direction"] == "LONG" and went_up) or (row["direction"] == "SHORT" and not went_up)
+            bet = row["kelly_bet"] or 0.0
+            magnitude = bet * abs(change)
+            outcome = "WIN" if is_win else "LOSS"
+            pnl = magnitude if is_win else -magnitude
+            resolution_data = {"future_price": future_price, "change": change, "timeframe": tf}
+
+        with _connect() as conn:
+            conn.execute(
+                """
+                UPDATE signals
+                SET outcome = ?, actual_pnl = ?, resolved_at = ?, resolution_data = ?
+                WHERE id = ?
+                """,
+                (
+                    outcome, pnl,
+                    datetime.now(timezone.utc).isoformat(),
+                    json.dumps(resolution_data),
+                    row["id"],
+                ),
+            )
+        resolved_count += 1
+
+    return resolved_count
