@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -264,3 +265,33 @@ def test_resolve_trend_short_loss(fresh_tracker):
     row = fresh_tracker.get_signal(sig_id)
     assert row["outcome"] == "LOSS"
     assert row["actual_pnl"] == pytest.approx(-3.0, rel=1e-3)
+
+
+def test_update_daily_metrics_aggregates_per_system(fresh_tracker):
+    # Two PolyTraders signals, one WIN one LOSS, both resolved today
+    fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, kelly_bet=10.0,
+        market_slug="market-1", cost_estimate=0.02,
+    )
+    fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.06, market_price=0.50, kelly_bet=10.0,
+        market_slug="market-2", cost_estimate=0.02,
+    )
+    # Manually mark them resolved
+    import sqlite3
+    conn = sqlite3.connect(fresh_tracker.DB_PATH)
+    conn.execute("UPDATE signals SET outcome='WIN', actual_pnl=15.0, resolved_at=? WHERE market_slug='market-1'",
+                 (datetime.now(timezone.utc).isoformat(),))
+    conn.execute("UPDATE signals SET outcome='LOSS', actual_pnl=-10.0, resolved_at=? WHERE market_slug='market-2'",
+                 (datetime.now(timezone.utc).isoformat(),))
+    conn.commit()
+    conn.close()
+
+    fresh_tracker.update_daily_metrics()
+
+    summary = fresh_tracker.get_performance_summary(system="polytraders", days=30)
+    assert summary["signals_resolved"] == 2
+    assert summary["win_rate"] == pytest.approx(0.5)
+    assert summary["total_pnl"] == pytest.approx(5.0)

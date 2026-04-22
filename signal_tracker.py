@@ -430,3 +430,85 @@ def resolve_modeltelegra_signals() -> int:
         resolved_count += 1
 
     return resolved_count
+
+
+# ── Metrics & reporting ──────────────────────────────────────────────────────
+
+def update_daily_metrics(date: str | None = None) -> None:
+    """Recompute daily_metrics for the given UTC date (default: today)."""
+    target = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT system,
+                   COUNT(*) AS signals_logged,
+                   SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) AS signals_resolved,
+                   AVG(CASE WHEN outcome = 'WIN' THEN 1.0
+                            WHEN outcome IS NOT NULL THEN 0.0 END) AS win_rate,
+                   AVG(estimated_edge) AS avg_edge,
+                   AVG(net_edge) AS avg_net_edge,
+                   SUM(actual_pnl) AS total_pnl
+            FROM signals
+            WHERE date(created_at) = ?
+            GROUP BY system
+            """,
+            (target,),
+        ).fetchall()
+
+        for r in rows:
+            conn.execute(
+                """
+                INSERT INTO daily_metrics
+                    (date, system, signals_logged, signals_resolved,
+                     win_rate, avg_edge, avg_net_edge, total_pnl)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date, system) DO UPDATE SET
+                    signals_logged = excluded.signals_logged,
+                    signals_resolved = excluded.signals_resolved,
+                    win_rate = excluded.win_rate,
+                    avg_edge = excluded.avg_edge,
+                    avg_net_edge = excluded.avg_net_edge,
+                    total_pnl = excluded.total_pnl
+                """,
+                (
+                    target, r["system"],
+                    r["signals_logged"] or 0,
+                    r["signals_resolved"] or 0,
+                    r["win_rate"], r["avg_edge"], r["avg_net_edge"], r["total_pnl"],
+                ),
+            )
+
+
+def get_performance_summary(system: str | None = None, days: int = 30) -> dict[str, Any]:
+    """Return aggregated win rate, edge, PnL for the trailing `days` days."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        sql = """
+            SELECT COUNT(*) AS signals_logged,
+                   SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) AS signals_resolved,
+                   AVG(CASE WHEN outcome = 'WIN' THEN 1.0
+                            WHEN outcome IS NOT NULL THEN 0.0 END) AS win_rate,
+                   AVG(estimated_edge) AS avg_edge,
+                   AVG(net_edge) AS avg_net_edge,
+                   SUM(actual_pnl) AS total_pnl
+            FROM signals
+            WHERE created_at >= ?
+        """
+        params: list[Any] = [cutoff]
+        if system:
+            sql += " AND system = ?"
+            params.append(system)
+        row = conn.execute(sql, params).fetchone()
+    return {
+        "system": system or "ALL",
+        "days": days,
+        "signals_logged": row["signals_logged"] or 0,
+        "signals_resolved": row["signals_resolved"] or 0,
+        "win_rate": row["win_rate"],
+        "avg_edge": row["avg_edge"],
+        "avg_net_edge": row["avg_net_edge"],
+        "total_pnl": row["total_pnl"] or 0.0,
+    }
