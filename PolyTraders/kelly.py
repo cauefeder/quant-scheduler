@@ -30,12 +30,15 @@ Tune SIGNAL_MULTIPLIER and KELLY_FRACTION for your risk tolerance.
 """
 from __future__ import annotations
 
+import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from market_context import classify_prediction_market
+
+log = logging.getLogger("kelly")
 
 # ── Configurable knobs ────────────────────────────────────────────────────────
 
@@ -228,6 +231,24 @@ def score_opportunities(
         entry_discount = max(0.0, 1.0 - overshoot / ENTRY_DISCOUNT_CAP)
         estimated_edge = raw_edge * entry_discount
 
+        # ── Market structure context (Phase 1) ───────────────────────────────
+        try:
+            ctx = classify_prediction_market(
+                condition_id=condition_id,
+                cur_price=cur_price,
+                wav_entry=wav_entry,
+                total_exposure=total_val,
+            )
+            estimated_edge *= ctx.edge_mult
+            market_structure = ctx.structure.value if hasattr(ctx.structure, "value") else str(ctx.structure)
+            context_quality = ctx.quality
+            context_note = ctx.note
+        except Exception as exc:
+            log.debug("market_context classify failed for %s: %s", condition_id, exc)
+            market_structure = "Unknown"
+            context_quality = "acceptable"
+            context_note = ""
+
         if estimated_edge < min_net_edge:
             continue
 
@@ -272,6 +293,9 @@ def score_opportunities(
             kelly_bet=kelly_bet,
             weighted_avg_entry=wav_entry,
             total_exposure=total_val,
+            market_structure=market_structure,
+            context_quality=context_quality,
+            context_note=context_note,
             positions=sig_sorted,
         ))
 
