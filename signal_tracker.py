@@ -117,3 +117,101 @@ def init_db() -> None:
                     (version, datetime.now(timezone.utc).isoformat()),
                 )
                 log.info("Applied schema migration v%d", version)
+
+
+# ── log_signal ───────────────────────────────────────────────────────────────
+
+_VALID_DIRECTIONS = {"YES", "NO", "LONG", "SHORT", "STRADDLE"}
+_VALID_TIMEFRAMES = {"1H", "1D", "1W"}
+
+
+def _compute_entry_price(direction: str, market_price: float) -> float:
+    """Direction-aware entry cost. PM NO pays (1 - market_price); everything else pays market_price."""
+    if direction == "NO":
+        return 1.0 - market_price
+    return market_price
+
+
+def log_signal(
+    system: str,
+    signal_type: str,
+    direction: str,
+    estimated_edge: float,
+    market_price: float,
+    *,
+    market_slug: str | None = None,
+    ticker: str | None = None,
+    condition_id: str | None = None,
+    estimated_prob: float | None = None,
+    kelly_bet: float | None = None,
+    kelly_fraction: float | None = None,
+    signal_tier: str | None = None,
+    raw_features: dict | None = None,
+    cost_estimate: float = 0.0,
+) -> int:
+    """Log a signal. Returns the signal ID (or the existing ID on dedup hit)."""
+    if direction not in _VALID_DIRECTIONS:
+        raise ValueError(f"direction must be one of {_VALID_DIRECTIONS}, got {direction!r}")
+
+    if signal_type == "polymarket" and not market_slug:
+        raise ValueError("polymarket signals require market_slug")
+
+    if signal_type == "straddle":
+        if not raw_features or "straddle_cost" not in raw_features:
+            raise ValueError("straddle signals require raw_features['straddle_cost']")
+
+    if signal_type == "trend_direction":
+        if not raw_features or "timeframe" not in raw_features:
+            raise ValueError("trend_direction signals require raw_features['timeframe']")
+        if raw_features["timeframe"] not in _VALID_TIMEFRAMES:
+            raise ValueError(
+                f"raw_features['timeframe'] must be one of {_VALID_TIMEFRAMES}"
+            )
+
+    entry_price = _compute_entry_price(direction, market_price)
+    net_edge = max(0.0, estimated_edge - cost_estimate)
+    created_at = datetime.now(timezone.utc).isoformat()
+    raw_json = json.dumps(raw_features) if raw_features else None
+
+    with _connect() as conn:
+        # Deduplication: same system + slug/ticker + direction on the same UTC date
+        dedup_key = market_slug or ticker or ""
+        existing = conn.execute(
+            """
+            SELECT id FROM signals
+            WHERE system = ?
+              AND COALESCE(market_slug, ticker, '') = ?
+              AND direction = ?
+              AND date(created_at) = date(?)
+            LIMIT 1
+            """,
+            (system, dedup_key, direction, created_at),
+        ).fetchone()
+        if existing:
+            return int(existing[0])
+
+        cur = conn.execute(
+            """
+            INSERT INTO signals (
+                system, signal_type, market_slug, ticker, condition_id,
+                direction, estimated_edge, estimated_prob, market_price,
+                entry_price, kelly_bet, kelly_fraction, signal_tier,
+                raw_features, cost_estimate, net_edge, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                system, signal_type, market_slug, ticker, condition_id,
+                direction, estimated_edge, estimated_prob, market_price,
+                entry_price, kelly_bet, kelly_fraction, signal_tier,
+                raw_json, cost_estimate, net_edge, created_at,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_signal(signal_id: int) -> dict[str, Any] | None:
+    """Fetch a single signal row as a dict (for tests and audit)."""
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
+        return dict(row) if row else None
