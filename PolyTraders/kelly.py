@@ -30,6 +30,22 @@ Tune SIGNAL_MULTIPLIER and KELLY_FRACTION for your risk tolerance.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_MONOREPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+try:
+    from signal_tracker import log_signal as _log_signal
+    from cost_model import estimate_cost as _estimate_cost
+except ImportError:
+    def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
+        return -1
+    def _estimate_cost(*args, **kwargs):  # type: ignore[no-redef]
+        return 0.0
+
 import logging
 import math
 from collections import defaultdict
@@ -252,16 +268,32 @@ def score_opportunities(
         if estimated_edge < min_net_edge:
             continue
 
-        # ── Kelly Criterion ──────────────────────────────────────────────────
-        p_est = min(cur_price + estimated_edge, 0.99)
-        q_est = 1.0 - p_est
-        b = (1.0 - cur_price) / cur_price   # net odds: win this much per $1 risked
-
+        # ── Two-pass Kelly with cost deduction (Phase 1) ────────────────────
+        # Pass 1: provisional bet using gross edge → upper-bound input to cost model
+        # cur_price is already the side-specific price (we group by (cond_id, outcome),
+        # so cur_price = the price of the side smart money is on — the side we copy).
+        side_price = cur_price
+        b = (1.0 - side_price) / side_price
         if b <= 0:
             continue
+        p_gross = min(side_price + estimated_edge, 0.99)
+        kelly_gross_frac = max(0.0, (b * p_gross - (1.0 - p_gross)) / b)
+        provisional_bet = kelly_gross_frac * bankroll * kelly_fraction
 
+        liquidity = float(getattr(representative, "liquidity", 0.0) or 0.0)
+        spread = float(getattr(representative, "spread", 0.0) or 0.0)
+        cost = _estimate_cost(
+            "polymarket", side_price, provisional_bet,
+            liquidity=liquidity, spread=spread,
+        )
+        net_edge = max(0.0, estimated_edge - cost)
+        if net_edge < min_net_edge:
+            continue  # skip — negative EV after costs
+
+        # Pass 2: re-size with net edge
+        p_est = min(side_price + net_edge, 0.99)
+        q_est = 1.0 - p_est
         kelly_full = max(0.0, (b * p_est - q_est) / b)
-
         if kelly_full <= 0:
             continue
 
@@ -272,6 +304,32 @@ def score_opportunities(
 
         if kelly_bet < MIN_BET_USDC:
             continue
+
+        # ── Log signal (Phase 1) ────────────────────────────────────────────
+        try:
+            _log_signal(
+                system="polytraders",
+                signal_type="polymarket",
+                direction=outcome,
+                estimated_edge=estimated_edge,
+                market_price=cur_price,
+                market_slug=getattr(representative, "slug", None),
+                condition_id=condition_id,
+                kelly_bet=kelly_bet,
+                kelly_fraction=kelly_fraction,
+                cost_estimate=cost,
+                raw_features={
+                    "signal_strength": signal_strength,
+                    "count_signal": count_signal,
+                    "size_signal": size_signal,
+                    "n_smart_traders": n,
+                    "wav_entry": wav_entry,
+                    "market_structure": market_structure,
+                    "context_quality": context_quality,
+                },
+            )
+        except Exception as exc:
+            log.debug("log_signal failed: %s", exc)
 
         slug = representative.slug or ""
         opportunities.append(Opportunity(

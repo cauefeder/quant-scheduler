@@ -14,9 +14,10 @@ if str(ROOT / "PolyTraders") not in sys.path:
     sys.path.insert(0, str(ROOT / "PolyTraders"))
 
 
-def _fake_position(condition_id="abc", outcome="YES", cur_price=0.35, avg_price=0.30,
+def _fake_position(condition_id="abc", outcome="YES", cur_price=0.32, avg_price=0.30,
                    current_value=500.0, trader_rank=1, proxy_wallet="0xAAA",
-                   slug="market-x", title="Market X", end_date=None):
+                   slug="market-x", title="Market X", end_date=None,
+                   liquidity=50000.0, spread=0.01):
     p = MagicMock()
     p.condition_id = condition_id
     p.outcome = outcome
@@ -29,6 +30,8 @@ def _fake_position(condition_id="abc", outcome="YES", cur_price=0.35, avg_price=
     p.title = title
     p.end_date = end_date
     p.username = f"trader_{trader_rank}"
+    p.liquidity = liquidity
+    p.spread = spread
     return p
 
 
@@ -63,3 +66,38 @@ def test_score_opportunities_handles_classifier_exception():
     # Should not crash; uses default context
     assert opps
     assert opps[0].context_quality == "acceptable"
+
+
+def test_score_opportunities_logs_signal_with_cost(fresh_tracker, monkeypatch):
+    import signal_tracker
+    from PolyTraders import kelly
+    from PolyTraders.market_context import MarketContext, PriceStructure
+
+    # After fresh_tracker reloaded signal_tracker onto a temp DB, rebind kelly's
+    # module-level alias so it writes to the temp DB, not the stale one.
+    monkeypatch.setattr(kelly, "_log_signal", signal_tracker.log_signal)
+
+    positions = [
+        _fake_position(proxy_wallet=f"0x{i:03}", trader_rank=i + 1, slug="will-x")
+        for i in range(5)
+    ]
+    fake_ctx = MarketContext(
+        structure=PriceStructure.COMPRESSION, edge_mult=1.30,
+        quality="ideal", note="test",
+    )
+    monkeypatch.setattr(kelly, "classify_prediction_market", lambda **k: fake_ctx)
+
+    opps = kelly.score_opportunities(positions, total_traders_checked=25, bankroll=100.0)
+    assert opps, "expected at least one opportunity after two-pass Kelly"
+
+    import sqlite3
+    conn = sqlite3.connect(fresh_tracker.DB_PATH)
+    rows = conn.execute(
+        "SELECT cost_estimate, net_edge, market_slug FROM signals WHERE system='polytraders'"
+    ).fetchall()
+    conn.close()
+    assert rows, "expected signal_tracker to receive at least one row"
+    cost, net_edge, slug = rows[0]
+    assert slug == "will-x"
+    assert cost > 0
+    assert net_edge < opps[0].estimated_edge + 1e-9  # net = gross - cost
