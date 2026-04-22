@@ -31,12 +31,14 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -44,6 +46,20 @@ try:
 except ImportError:
     print("Missing dependency. Run:  pip install requests")
     sys.exit(1)
+
+
+# --- signal_tracker shim (monorepo sibling import) ------------------------
+_MONOREPO_ROOT = Path(__file__).resolve().parents[1]  # polymarket_telegram_bot.py -> Poly2 -> Projetos
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+try:
+    from signal_tracker import log_signal as _log_signal
+except ImportError:
+    def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
+        return -1
+
+log = logging.getLogger(__name__)
 
 
 # --- Configuration --------------------------------------------------------
@@ -850,20 +866,37 @@ class Pipeline:
                     + (1 / max(market.days_to_resolution or 30, 0.5)) * 5
                 )
 
-                bets.append(
-                    KellyBet(
-                        market=market,
-                        outcome=outcome,
-                        ai_estimate=estimate,
-                        edge=edge,
-                        kelly_fraction=k["kelly"],
-                        adj_kelly_fraction=k["adj_kelly"],
-                        bet_size_usd=k["bet"],
-                        expected_value=k["ev"],
-                        odds_decimal=k["odds"],
-                        score=score,
-                    )
+                bet = KellyBet(
+                    market=market,
+                    outcome=outcome,
+                    ai_estimate=estimate,
+                    edge=edge,
+                    kelly_fraction=k["kelly"],
+                    adj_kelly_fraction=k["adj_kelly"],
+                    bet_size_usd=k["bet"],
+                    expected_value=k["ev"],
+                    odds_decimal=k["odds"],
+                    score=score,
                 )
+
+                try:
+                    _log_signal(
+                        system="poly2",
+                        signal_type="polymarket",
+                        direction=outcome.outcome,
+                        estimated_edge=float(edge),
+                        estimated_prob=float(true_prob),
+                        market_price=float(market_prob),
+                        market_slug=market.slug or None,
+                        condition_id=market.condition_id or None,
+                        kelly_bet=float(k["bet"]),
+                        kelly_fraction=float(k["adj_kelly"]),
+                        raw_features={"category": market.category or None},
+                    )
+                except Exception as exc:
+                    log.debug("log_signal failed: %s", exc)
+
+                bets.append(bet)
 
         bets.sort(key=lambda b: b.score, reverse=True)
         return bets
