@@ -215,3 +215,111 @@ def get_signal(signal_id: int) -> dict[str, Any] | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
         return dict(row) if row else None
+
+
+# ── Polymarket resolution ────────────────────────────────────────────────────
+
+import urllib.request
+import urllib.parse
+
+GAMMA_API = "https://gamma-api.polymarket.com/markets"
+_RESOLVE_BATCH_LIMIT = 50  # max markets queried per resolver run
+
+
+def _fetch_gamma_market(slug: str) -> list[dict] | None:
+    """Query Gamma for a single market by slug. Returns the JSON list, or None on failure."""
+    qs = urllib.parse.urlencode({"slug": slug})
+    req = urllib.request.Request(
+        f"{GAMMA_API}?{qs}",
+        headers={"User-Agent": "signal_tracker/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001 — log and skip this market
+        log.debug("Gamma fetch failed for %s: %s", slug, exc)
+        return None
+
+
+def _parse_resolution(market: dict) -> str | None:
+    """Return 'YES', 'NO', or None if the market isn't resolved yet."""
+    if not market.get("closed"):
+        return None
+    if not market.get("resolutionSource"):
+        return None
+    try:
+        prices = json.loads(market.get("outcomePrices", "[]"))
+        yes_price = float(prices[0])
+    except (ValueError, IndexError, TypeError):
+        return None
+    if yes_price >= 0.99:
+        return "YES"
+    if yes_price <= 0.01:
+        return "NO"
+    return None  # ambiguous — leave unresolved
+
+
+def resolve_polymarket_signals() -> int:
+    """Resolve all unresolved Polymarket signals via Gamma API. Returns count resolved."""
+    import time
+
+    with _connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, market_slug, direction, market_price, entry_price, kelly_bet
+            FROM signals
+            WHERE outcome IS NULL
+              AND signal_type = 'polymarket'
+              AND market_slug IS NOT NULL
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (_RESOLVE_BATCH_LIMIT,),
+        ).fetchall()
+
+    resolved_count = 0
+    for row in rows:
+        market_data = _fetch_gamma_market(row["market_slug"])
+        if not market_data:
+            time.sleep(0.2)
+            continue
+        market = market_data[0] if isinstance(market_data, list) and market_data else None
+        if not market:
+            time.sleep(0.2)
+            continue
+
+        resolution = _parse_resolution(market)
+        if not resolution:
+            time.sleep(0.2)
+            continue
+
+        is_win = resolution == row["direction"]
+        entry = row["entry_price"] or row["market_price"] or 0.5
+        bet = row["kelly_bet"] or 0.0
+        if is_win:
+            outcome = "WIN"
+            pnl = bet * (1.0 / entry - 1.0)
+        else:
+            outcome = "LOSS"
+            pnl = -bet
+
+        with _connect() as conn:
+            conn.execute(
+                """
+                UPDATE signals
+                SET outcome = ?, actual_pnl = ?, resolved_at = ?, resolution_data = ?
+                WHERE id = ?
+                """,
+                (
+                    outcome,
+                    pnl,
+                    datetime.now(timezone.utc).isoformat(),
+                    json.dumps({"yes_price": resolution, "source": "gamma-api"}),
+                    row["id"],
+                ),
+            )
+        resolved_count += 1
+        time.sleep(0.2)
+
+    return resolved_count

@@ -1,8 +1,10 @@
 """Tests for signal_tracker.py — schema, pragmas, and migration setup."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -134,3 +136,70 @@ def test_log_signal_deduplication_within_run(fresh_tracker):
     ).fetchone()[0]
     conn.close()
     assert count == 1
+
+
+def _fake_gamma_response(closed: bool, yes_price: float = 1.0):
+    """Mimic the shape returned by https://gamma-api.polymarket.com/markets?slug=…"""
+    return [{
+        "slug": "will-x-happen",
+        "closed": closed,
+        "resolutionSource": "https://example.com" if closed else "",
+        "outcomePrices": json.dumps([str(yes_price), str(1.0 - yes_price)]),
+    }]
+
+
+def test_resolve_polymarket_yes_win(fresh_tracker):
+    sig_id = fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      return_value=_fake_gamma_response(closed=True, yes_price=1.0)):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 1
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    # entry_price=0.40, kelly_bet=10 → payout = 10 * (1/0.40 - 1) = 15
+    assert row["actual_pnl"] == pytest.approx(15.0)
+
+
+def test_resolve_polymarket_no_win(fresh_tracker):
+    """NO bet at market_price=0.30 → entry_price=0.70 → win pays 10*(1/0.70 - 1) ≈ 4.29."""
+    sig_id = fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="NO",
+        estimated_edge=0.05, market_price=0.30, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      return_value=_fake_gamma_response(closed=True, yes_price=0.0)):
+        fresh_tracker.resolve_polymarket_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    assert row["actual_pnl"] == pytest.approx(10.0 * (1.0 / 0.70 - 1.0))
+
+
+def test_resolve_polymarket_loss(fresh_tracker):
+    sig_id = fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      return_value=_fake_gamma_response(closed=True, yes_price=0.0)):
+        fresh_tracker.resolve_polymarket_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "LOSS"
+    assert row["actual_pnl"] == pytest.approx(-10.0)
+
+
+def test_resolve_polymarket_skips_open_markets(fresh_tracker):
+    fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      return_value=_fake_gamma_response(closed=False)):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 0
