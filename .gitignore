@@ -54,3 +54,8 @@ research/*
 
 # ── Cursor files ──────────────────────────────────────────────────────────────
 .backfill_cursor
+
+# Signal tracking database (Phase 1)
+signal_tracker.db
+signal_tracker.db-shm
+signal_tracker.db-wal
