@@ -1724,13 +1724,17 @@ Run: `cd "d:/OMNP - Quant/Projetos/AlphaFeed" && python backend/adapters/quant_r
 
 Expected: completes without error; check the temp DB or `signal_tracker.db` afterward to see rows.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit (AlphaFeed is a NESTED separate git repo)**
+
+The `AlphaFeed/` directory is its own git repository (it has its own `.git` folder and is *not* tracked by the monorepo). Commit inside that repo, not the monorepo:
 
 ```bash
-cd "d:/OMNP - Quant/Projetos"
-git add AlphaFeed/backend/adapters/quant_report.py
-git commit -m "feat(alphafeed): log scored opportunities to signal_tracker"
+cd "d:/OMNP - Quant/Projetos/AlphaFeed"
+git add backend/adapters/quant_report.py
+git commit -m "feat: log scored opportunities to signal_tracker (Phase 1)"
 ```
+
+Do NOT run `git add AlphaFeed/...` from the monorepo root — the path will be silently ignored because Git sees the nested `.git` and refuses to recurse into it.
 
 ---
 
