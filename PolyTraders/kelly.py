@@ -35,6 +35,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from market_context import classify_prediction_market
+
 # ── Configurable knobs ────────────────────────────────────────────────────────
 
 # How many top traders must share a position to qualify
@@ -102,12 +104,16 @@ class Opportunity:
     signal_strength: float      # blended count+size signal
     count_signal: float         # n_smart / total_traders
     size_signal: float          # mean_exposure / SIZE_ANCHOR (capped at 1)
-    estimated_edge: float       # probability edge above market price
+    estimated_edge: float       # probability edge above market price (context-adjusted)
+    raw_edge: float             # edge before context adjustment
     p_est: float                # p_market + edge
     kelly_full: float           # full Kelly fraction (of bankroll)
     kelly_bet: float            # recommended bet in USDC (fractioned + capped)
     weighted_avg_entry: float   # weighted avg entry price (by position value)
     total_exposure: float       # total USDC all smart traders have in this
+    market_structure: str = "Unknown"    # price action context label
+    context_quality:  str = "acceptable" # "ideal" | "acceptable" | "avoid"
+    context_note:     str = ""           # plain-English structure explanation
     positions: list = field(default_factory=list, repr=False)
 
     @property
@@ -260,6 +266,7 @@ def score_opportunities(
             count_signal=count_signal,
             size_signal=size_signal,
             estimated_edge=estimated_edge,
+            raw_edge=raw_edge,
             p_est=p_est,
             kelly_full=kelly_full,
             kelly_bet=kelly_bet,
