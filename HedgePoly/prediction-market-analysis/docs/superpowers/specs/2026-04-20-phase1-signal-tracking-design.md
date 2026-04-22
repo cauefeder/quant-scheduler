@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS signals (
     estimated_edge  REAL NOT NULL,
     estimated_prob  REAL,
     market_price    REAL,
+    entry_price     REAL,
     kelly_bet       REAL,
     kelly_fraction  REAL,
     signal_tier     TEXT,
@@ -81,7 +82,30 @@ CREATE INDEX IF NOT EXISTS idx_signals_system ON signals(system);
 CREATE INDEX IF NOT EXISTS idx_signals_slug ON signals(market_slug);
 CREATE INDEX IF NOT EXISTS idx_signals_unresolved ON signals(outcome) WHERE outcome IS NULL;
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, datetime('now'));
 ```
+
+### Connection Pragmas
+
+Every connection opened by `signal_tracker.py` MUST set these pragmas immediately after `sqlite3.connect()` and before any DDL/DML:
+
+```python
+conn.execute("PRAGMA journal_mode=WAL")        # concurrent readers + 1 writer
+conn.execute("PRAGMA busy_timeout=5000")       # wait up to 5s on locked DB
+conn.execute("PRAGMA synchronous=NORMAL")      # safe with WAL, faster than FULL
+conn.execute("PRAGMA foreign_keys=ON")
+```
+
+WAL mode is critical: the scheduler runs subsystems in parallel, so multiple Python processes may write concurrently. Without WAL, writers block readers and trigger `database is locked` errors.
+
+### Schema Migrations
+
+The `schema_version` table tracks the current schema generation. On import, `signal_tracker.py` checks `SELECT MAX(version) FROM schema_version` and applies pending migrations from a `_MIGRATIONS` list. Phase 1 ships at version 1. Future schema changes (Phase 2+) bump the version and append to the migration list.
 
 ### Column Semantics
 
@@ -95,7 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
 | `direction` | TEXT | `YES`, `NO` for PM; `LONG`, `SHORT` for directional; `STRADDLE` for vol plays |
 | `estimated_edge` | REAL | Gross edge before transaction costs |
 | `estimated_prob` | REAL | System's probability estimate (e.g., AlphaFeed quantScore, Poly2 Gemini prob) |
-| `market_price` | REAL | Market price at signal time |
+| `market_price` | REAL | YES-side market price at signal time (always in [0, 1] for PM, USD for assets). Direction-independent. |
+| `entry_price` | REAL | Effective entry price for the chosen direction. For PM: `market_price` if YES, `1 - market_price` if NO. For assets: same as `market_price`. Used by resolver to compute PnL correctly for both sides. |
 | `kelly_bet` | REAL | Recommended bet in USD |
 | `kelly_fraction` | REAL | Kelly fraction (after multiplier, before bankroll) |
 | `signal_tier` | TEXT | `A`, `B`, `C` for AlphaFeed; `HIGH`, `MEDIUM`, `LOW` for others; NULL if not tiered |
@@ -130,7 +155,21 @@ def log_signal(
     raw_features: dict | None = None,
     cost_estimate: float = 0.0,
 ) -> int:
-    """Log a signal. Returns the signal ID."""
+    """Log a signal. Returns the signal ID.
+
+    Validation:
+    - signal_type='polymarket' REQUIRES market_slug (resolver needs it to query Gamma API).
+      Raises ValueError if missing. condition_id is optional (slug is the primary key).
+    - signal_type='straddle' REQUIRES raw_features['straddle_cost'] (premium paid as fraction
+      of underlying — used by resolver to compute breakeven and PnL). Raises ValueError if missing.
+    - signal_type='trend_direction' REQUIRES raw_features['timeframe'] in {'1H', '1D', '1W'}
+      so the resolver knows how far ahead to look up the realized price.
+
+    entry_price is computed automatically from (market_price, direction):
+    - PM YES: entry_price = market_price
+    - PM NO:  entry_price = 1 - market_price
+    - Assets: entry_price = market_price (LONG/SHORT use market_price as cost basis)
+    """
 
 def resolve_polymarket_signals() -> int:
     """Check all unresolved Polymarket signals against Gamma API.
@@ -152,20 +191,35 @@ def get_performance_summary(system: str | None = None, days: int = 30) -> dict:
 **Polymarket signals** (`signal_type = 'polymarket'`):
 - Query `GET https://gamma-api.polymarket.com/markets?slug={slug}`
 - If market has `closed=true` and `resolutionSource` is set:
-  - Parse `outcomePrices` — if YES outcome settled to 1.0, resolution is YES
+  - Parse `outcomePrices` — if YES outcome settled to 1.0, resolution is YES, else NO
   - Compare against `direction`: if direction matches resolution → WIN, else LOSS
-  - `actual_pnl = kelly_bet * (1/market_price - 1)` for WIN, `-kelly_bet` for LOSS
+  - **PnL formula uses `entry_price`, NOT `market_price`** (handles YES and NO symmetrically):
+    - WIN: `actual_pnl = kelly_bet * (1.0 / entry_price - 1.0)`
+    - LOSS: `actual_pnl = -kelly_bet`
+  - Worked example (NO bet at market_price=0.30):
+    - `entry_price = 1 - 0.30 = 0.70` (cost of NO share)
+    - If market resolves NO → WIN, payout = $1 per share, gain = `(1/0.70 - 1) ≈ 43%`
+    - If market resolves YES → LOSS, lose entire `kelly_bet`
 
 **ModelTelegra straddle signals** (`signal_type = 'straddle'`):
+- `raw_features['straddle_cost']` MUST be present — it is the premium paid as a fraction of the
+  underlying (e.g., 0.04 = 4% premium for an at-the-money straddle). This is the breakeven move.
+- `cost_estimate` (slippage/spread) is NOT the breakeven — keep these distinct.
 - Fetch BTC price 24h after `created_at` via yfinance
 - `move = abs(price_24h_later - price_at_signal) / price_at_signal`
-- If `move > cost_estimate`: WIN. Else: LOSS.
-- `actual_pnl = kelly_bet * (move / cost_estimate - 1)` for WIN, `-kelly_bet * (1 - move/cost_estimate)` for LOSS
+- `breakeven = raw_features['straddle_cost'] + cost_estimate` (premium + execution drag)
+- If `move > breakeven`: WIN. Else: LOSS.
+- **Convention**: `kelly_bet` for straddles is the **premium outlay** (max loss), not underlying
+  notional. So a "lose everything" outcome (move = 0) yields `actual_pnl = -kelly_bet`.
+- `actual_pnl = kelly_bet * (move / breakeven - 1)` for WIN
+- `actual_pnl = -kelly_bet * (1 - move / breakeven)` for LOSS (clamped to `-kelly_bet` when move = 0)
 
 **ModelTelegra trend signals** (`signal_type = 'trend_direction'`):
-- Fetch price N bars later (1D for 1H signals, 5D for 1D signals)
+- `raw_features['timeframe']` MUST be present — one of `'1H'`, `'1D'`, `'1W'`.
+- Lookup horizon: 1H signal → 1D later, 1D signal → 5D later, 1W signal → 30D later.
+- Fetch price N bars later via yfinance using the mapped horizon.
 - If direction is LONG and price went up → WIN. LONG and price went down → LOSS. Vice versa for SHORT.
-- `actual_pnl = kelly_bet * abs(price_change / market_price)` for WIN, negative for LOSS.
+- `actual_pnl = kelly_bet * abs(price_change / market_price)` for WIN, negative same magnitude for LOSS.
 
 ### Integration with Scheduler
 
@@ -184,14 +238,49 @@ log.info(f"Signal tracker: {resolved} signals resolved")
 
 Each system calls `log_signal()` after generating an opportunity but before sending the Telegram report. Integration points:
 
-| System | File | Location | What to log |
-|--------|------|----------|-------------|
-| HedgePoly | `reporting.py` | After `_score_market()` produces an opportunity | Each scored market with calibration edge |
-| PolyTraders | `kelly.py` | After constructing each `Opportunity` | Each opportunity with count/size signals, edge, Kelly bet |
-| ModelTelegra | `models/model3_risk.py` | After `generate_trade_decision()` | BTC straddle + each trend signal above threshold |
-| AlphaFeed | `backend/adapters/quant_report.py` | After `score_opportunity()` | Each scored opportunity with quantScore and features |
-| Poly2 | `polymarket_telegram_bot.py` | After Kelly sizing in `_match_and_size()` | Each bet with Gemini prob, edge, Kelly size |
-| Poly | `polymarket_scraper.py` | After `find_opportunities()` | Each opportunity with heuristic edge |
+| System | File | Location | What to log | Required keys |
+|--------|------|----------|-------------|---------------|
+| HedgePoly | `reporting.py` | After `_score_market()` produces an opportunity | Each scored market with calibration edge | `market_slug=market.slug`, `condition_id` if available |
+| PolyTraders | `kelly.py` | After constructing each `Opportunity` | Each opportunity with count/size signals, edge, Kelly bet | `market_slug=opp.slug`, `condition_id=opp.condition_id` |
+| ModelTelegra | `models/model3_risk.py` | After `generate_trade_decision()` | BTC straddle + each trend signal above threshold | `ticker='BTC-USD'`, `raw_features['straddle_cost']` for straddles, `raw_features['timeframe']` for trend |
+| AlphaFeed | `backend/adapters/quant_report.py` | After `score_opportunity()` | Each scored opportunity with quantScore and features | `market_slug=opp['slug']`, `condition_id=opp.get('condition_id')` |
+| Poly2 | `polymarket_telegram_bot.py` | After Kelly sizing in `_match_and_size()` | Each bet with Gemini prob, edge, Kelly size | `market_slug=market['slug']`, `condition_id=market['conditionId']` |
+| Poly | `polymarket_scraper.py` | After `find_opportunities()` | Each opportunity with heuristic edge | `market_slug=market.slug` (the scraper already exposes a `slug` field — pass it explicitly, do NOT derive from URL) |
+
+### Importing signal_tracker from Subprojects
+
+The five subsystems live in sibling directories under `d:/OMNP - Quant/Projetos/`. They are not
+installed as packages, so a plain `from signal_tracker import log_signal` will fail. Each
+integration point MUST add the monorepo root to `sys.path` before importing:
+
+```python
+# At the top of reporting.py / kelly.py / model3_risk.py / quant_report.py /
+# polymarket_telegram_bot.py / polymarket_scraper.py
+import sys
+from pathlib import Path
+
+_MONOREPO_ROOT = Path(__file__).resolve().parents[2]   # adjust depth per file
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+from signal_tracker import log_signal
+from cost_model import estimate_cost
+```
+
+Per-file `parents[N]` depth:
+
+| File | Depth | Reason |
+|------|-------|--------|
+| `HedgePoly/prediction-market-analysis/reporting.py` | `parents[2]` | reporting.py → prediction-market-analysis → HedgePoly → Projetos |
+| `PolyTraders/kelly.py` | `parents[1]` | kelly.py → PolyTraders → Projetos |
+| `ModelTelegra,/quant_desk/models/model3_risk.py` | `parents[3]` | model3_risk.py → models → quant_desk → ModelTelegra, → Projetos |
+| `AlphaFeed/backend/adapters/quant_report.py` | `parents[3]` | quant_report.py → adapters → backend → AlphaFeed → Projetos |
+| `Poly2/polymarket_telegram_bot.py` | `parents[1]` | bot.py → Poly2 → Projetos |
+| `Poly/polymarket_scraper.py` | `parents[1]` | scraper.py → Poly → Projetos |
+
+Wrap the import itself in `try/except ImportError` and degrade gracefully — if `signal_tracker`
+fails to import (e.g., AlphaFeed running in GitHub Actions without the monorepo root),
+log a warning and define a no-op `log_signal` shim so the main pipeline still runs.
 
 ### Deduplication
 
@@ -261,31 +350,76 @@ cost = 0.0  # informational signals only, not traded
 
 ModelTelegra trend signals are informational — no direct execution. Cost stays 0 for tracking purposes, but signals are still logged for accuracy measurement.
 
-### Integration with Kelly Sizing
+### Units: Probability Space vs Return Space
 
-Each system's Kelly calculation changes from:
+Edge and cost are in **different units** and must be reconciled before subtracting:
+
+- `estimated_edge` is in **probability space** for prediction markets (e.g., 0.10 means
+  "I think the true probability is 10pp higher than the market implies").
+- `estimate_cost` returns a fraction in **return space** (e.g., 0.02 means "2% drag on PnL
+  per round-trip, measured as a fraction of bet size").
+
+For Polymarket, the conversion is direct because a 1pp change in probability ≈ 1pp change in
+expected payout per dollar staked at prices near 0.5. At extreme prices the conversion is
+non-linear (a 1pp prob edge at p=0.95 is worth less than at p=0.50 because the payout
+multiple `1/p - 1` shrinks). For Phase 1 we use the linear approximation `net_edge = edge - cost`
+and document the bias: cost deduction is slightly too generous at price extremes. Phase 2
+will refine to `net_edge = edge - cost * (1 / p)` once tracked outcomes confirm the magnitude.
+
+For BTC straddles, both `estimated_edge` and `cost_estimate` are already in return-space
+fractions of the underlying — no conversion needed.
+
+For ModelTelegra trend signals, `cost_estimate = 0` (informational), so the units question
+is moot.
+
+### Resolving the Cost ↔ Kelly Circular Dependency
+
+The cost model's `impact` term needs `size_usd` to estimate slippage. But `size_usd` (the
+Kelly bet) depends on `net_edge`, which depends on `cost`. This is circular.
+
+**Two-pass resolution** — every system uses this pattern:
 
 ```python
-# BEFORE (gross edge)
-kelly_full = (b * p_est - q_est) / b
-```
-
-To:
-
-```python
-# AFTER (net edge)
 from cost_model import estimate_cost
 
-cost = estimate_cost('polymarket', cur_price, kelly_bet_estimate, liquidity=liquidity, spread=spread)
-net_edge = max(0, estimated_edge - cost)
-if net_edge < min_net_edge:
+# Direction-aware entry math: side_price is what you actually pay per share.
+# YES side: pay cur_price, win 1.0 if YES resolves
+# NO  side: pay (1 - cur_price), win 1.0 if NO resolves
+side_price = cur_price if direction == 'YES' else (1.0 - cur_price)
+b = (1.0 - side_price) / side_price          # payout odds for the side held
+p_gross = min(side_price + estimated_edge, 0.99)  # `estimated_edge` is on the side held
+
+# PASS 1 — provisional Kelly using GROSS edge (overestimates bet, that's OK)
+kelly_gross_frac = max(0, (b * p_gross - (1 - p_gross)) / b)
+provisional_bet = kelly_gross_frac * bankroll * KELLY_MULTIPLIER
+
+# Cost estimated against the provisional bet (the realistic upper bound)
+cost = estimate_cost(
+    'polymarket',
+    cur_price,
+    provisional_bet,
+    liquidity=liquidity,
+    spread=spread,
+)
+
+# PASS 2 — re-size with NET edge (uses the same side_price/b as pass 1)
+net_edge = max(0.0, estimated_edge - cost)
+if net_edge < MIN_NET_EDGE:
     continue  # skip — negative EV after costs
 
-p_est = min(cur_price + net_edge, 0.99)  # use net edge for Kelly input
-kelly_full = (b * p_est - q_est) / b
+p_net = min(side_price + net_edge, 0.99)
+kelly_net_frac = max(0, (b * p_net - (1 - p_net)) / b)
+kelly_bet = kelly_net_frac * bankroll * KELLY_MULTIPLIER
 ```
 
-The `cost_estimate` and `net_edge` are both stored in the signal tracker for analysis.
+Why this converges in one pass: the provisional bet is always ≥ the final bet (gross_edge ≥
+net_edge ⇒ gross_kelly ≥ net_kelly). Using the larger bet for the impact estimate is
+**conservative** — we slightly overestimate cost and slightly undersize the position. That
+bias is acceptable for Phase 1; iterating to a fixed point would buy us at most a few percent
+on bet size and isn't worth the complexity.
+
+Both `cost_estimate` and `net_edge` are stored in the signal tracker for analysis. The
+provisional bet is NOT stored.
 
 ---
 
@@ -331,7 +465,7 @@ except Exception:
 | COMPRESSION | 1.30 | ideal | 7d range <5pp AND ATR 1h <0.5pp |
 | BREAKOUT (confirmed) | 1.10 | acceptable | 24h move >8pp, still near smart money entry |
 | BREAKOUT (late) | 0.75 | avoid | 24h move >8pp, buying far above smart money |
-| PULLBACK | 1.55 | ideal | 7d trend >6pp, 24h flat, at smart money level |
+| PULLBACK | 1.55 | ideal | 7d trend >6pp, 24h flat (\|move\| ≤ 1pp), price within 1pp of smart money entry (entry_overshoot threshold) |
 | TREND (good entry) | 1.10 | acceptable | 7d move >4pp, <3pp above smart money |
 | TREND (late entry) | 0.80 | acceptable | 7d move >4pp, >3pp above smart money |
 | UNKNOWN | 1.00 | acceptable | No pattern matched |
