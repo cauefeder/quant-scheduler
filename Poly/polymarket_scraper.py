@@ -16,11 +16,13 @@ Usage:
 
 import argparse
 import json
+import logging
 import math
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -28,6 +30,20 @@ try:
 except ImportError:
     print("Missing dependency. Run: pip install requests")
     sys.exit(1)
+
+# ─── signal_tracker integration ──────────────────────────────────────────────
+
+log = logging.getLogger(__name__)
+
+_MONOREPO_ROOT = Path(__file__).resolve().parents[1]  # scraper.py → Poly → Projetos
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+try:
+    from signal_tracker import log_signal as _log_signal
+except ImportError:
+    def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
+        return -1
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -488,6 +504,20 @@ class OpportunityRanker:
                     score=score,
                 )
                 bets.append(bet)
+
+                try:
+                    _log_signal(
+                        system="poly",
+                        signal_type="polymarket",
+                        direction="YES",
+                        estimated_edge=float(bet.edge),
+                        market_price=float(bet.outcome.market_price),
+                        market_slug=getattr(bet.market, "slug", None) or None,
+                        condition_id=getattr(bet.market, "condition_id", None) or None,
+                        raw_features={"heuristic": "edge_estimator_composite"},
+                    )
+                except Exception as exc:
+                    log.debug("log_signal failed: %s", exc)
 
         bets.sort(key=lambda b: b.score, reverse=True)
         return bets
