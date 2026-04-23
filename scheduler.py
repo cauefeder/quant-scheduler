@@ -299,6 +299,20 @@ def run_all(dry_run: bool = False) -> None:
             )
             _tg_send(summary)
 
+    # ── Phase 1: signal tracker resolution + daily metrics ───────────────────
+    if not dry_run:
+        try:
+            from signal_tracker import (
+                resolve_polymarket_signals,
+                resolve_modeltelegra_signals,
+                update_daily_metrics,
+            )
+            resolved = resolve_polymarket_signals() + resolve_modeltelegra_signals()
+            update_daily_metrics()
+            log.info("signal_tracker: resolved %d signals", resolved)
+        except Exception as exc:
+            log.warning("signal_tracker resolution failed: %s", exc)
+
 
 # ── Daemon loop ────────────────────────────────────────────────────────────────
 def is_scheduled_now(last_run_times: dict[tuple[int, int], float]) -> tuple[int, int] | None:
