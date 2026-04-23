@@ -18,8 +18,10 @@ Decision outputs:
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -28,6 +30,26 @@ from analytics.regime import VolRegime
 from config.settings import risk as risk_cfg
 from models.model1_volatility import Model1Result
 from models.model2_trend import Model2Result, TrendState
+
+# --- signal_tracker shim (Phase 1, Task 14) ---
+# Resolve monorepo root so `signal_tracker` is importable regardless of CWD.
+# model3_risk.py -> models -> quant_desk -> ModelTelegra, -> Projetos
+_MONOREPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_MONOREPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MONOREPO_ROOT))
+
+try:
+    from signal_tracker import log_signal as _log_signal
+except ImportError:
+    def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
+        return -1
+
+# Normalize Model 2's lowercase timeframe keys to signal_tracker's expected set.
+_TF_MAP = {
+    "1h": "1H", "1H": "1H", "hourly": "1H",
+    "1d": "1D", "1D": "1D", "daily": "1D",
+    "1w": "1W", "1W": "1W", "weekly": "1W",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +392,26 @@ def integrate_signals(
         alert_worthy=alert_worthy,
     )
 
+    # --- Log straddle signal to signal_tracker (Phase 1, Task 14) ---
+    try:
+        _log_signal(
+            system="modeltelegra",
+            signal_type="straddle",
+            direction="STRADDLE",
+            estimated_edge=float(m1.straddle.expected_value),
+            market_price=float(m1.spot),
+            ticker="BTC-USD",
+            kelly_bet=float(m1.straddle.straddle_cost),
+            cost_estimate=0.005,
+            raw_features={
+                "straddle_cost": float(m1.straddle.straddle_cost),
+                "iv": float(m1.regime.iv_estimate),
+                "gex": float(m1.gex.net_gex),
+            },
+        )
+    except Exception as exc:
+        logger.debug("log_signal failed (straddle): %s", exc)
+
     # --- Per-ticker trend signals ---
     trend_signals: Dict[str, TradeSignal] = {}
     best_opportunities: List[Dict] = []
@@ -433,6 +475,23 @@ def integrate_signals(
         )
 
         trend_signals[ticker] = t_signal
+
+        # --- Log trend signal to signal_tracker (Phase 1, Task 14) ---
+        # Only log directional states; HOLD is not a tradeable direction.
+        if tr.current_state in (TrendState.BULLISH, TrendState.BEARISH):
+            try:
+                _log_signal(
+                    system="modeltelegra",
+                    signal_type="trend_direction",
+                    direction="LONG" if tr.current_state == TrendState.BULLISH else "SHORT",
+                    estimated_edge=float(t_signal.confidence),
+                    market_price=float(tr.last_price),
+                    ticker=ticker,
+                    kelly_bet=float(t_risk.suggested_position_pct * capital),
+                    raw_features={"timeframe": _TF_MAP.get("1h", "1H")},
+                )
+            except Exception as exc:
+                logger.debug("log_signal failed (trend %s): %s", ticker, exc)
 
         if t_signal.alert_worthy:
             try:
