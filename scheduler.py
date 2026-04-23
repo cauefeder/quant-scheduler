@@ -136,7 +136,7 @@ PROJECTS: list[dict] = [
                 "--with", "yfinance,python-telegram-bot,plotly,kaleido,"
                           "pandas,numpy,scipy,aiohttp,python-dotenv",
                 "python", "main.py"],
-        "timeout": 360,
+        "timeout": 600,
         "capture_to_telegram": False,
     },
     {
@@ -146,7 +146,7 @@ PROJECTS: list[dict] = [
         "cwd": POLY_DIR,
         "cmd": [UV, "run", "--no-project", "--python", "3.11", "--with", "requests",
                 "python", "polymarket_scraper.py"],
-        "timeout": 120,
+        "timeout": 240,
         "capture_to_telegram": True,
     },
     {
