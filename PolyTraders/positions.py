@@ -7,7 +7,7 @@ Optional: limit, offset, sortBy, sizeThreshold, ...
 """
 from __future__ import annotations
 
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import requests
@@ -110,47 +110,50 @@ def fetch_positions(
 def fetch_all_positions(
     traders,
     max_traders: int = 25,
-    delay: float = 0.35,
+    max_workers: int = 5,
 ) -> list[Position]:
     """
-    Fetch open positions for up to max_traders, respecting API rate limits.
+    Fetch open positions for up to max_traders concurrently.
 
     Parameters
     ----------
     traders : list[Trader]
         Trader objects from leaderboard.py
     max_traders : int
-        Maximum number of traders to query (rate-limit safety).
-    delay : float
-        Seconds to wait between requests.
+        Maximum number of traders to query.
+    max_workers : int
+        Thread pool size (keep ≤ 5 to stay within API rate limits).
 
     Returns
     -------
     list[Position]
-        All positions across all traders, with username/rank/pnl filled in.
+        All positions across all traders, with username/rank/pnl filled in,
+        sorted by trader rank (ascending).
     """
-    all_positions: list[Position] = []
+    cohort = [t for t in traders[:max_traders] if t.proxy_wallet]
 
-    for i, trader in enumerate(traders[:max_traders]):
-        if not trader.proxy_wallet:
-            continue
-
+    def _fetch_one(trader):
         positions = fetch_positions(trader.proxy_wallet)
-
         for p in positions:
             p.username = trader.username
             p.trader_rank = trader.rank
             p.trader_pnl = trader.pnl
+        return trader, positions
 
-        all_positions.extend(positions)
+    results: dict[str, list[Position]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_one, t): t for t in cohort}
+        for future in as_completed(futures):
+            trader, positions = future.result()
+            results[trader.proxy_wallet] = positions
+            print(
+                f"  [{trader.rank}] {trader.username[:20]:<20}"
+                f"  pnl=${trader.pnl:,.0f}  positions={len(positions)}"
+            )
 
-        print(
-            f"  [{i+1}/{min(max_traders, len(traders))}] "
-            f"{trader.username[:20]:<20} rank={trader.rank}  "
-            f"pnl=${trader.pnl:,.0f}  positions={len(positions)}"
-        )
-
-        if i < min(max_traders, len(traders)) - 1:
-            time.sleep(delay)
+    # Reconstruct in rank order so logging/report is deterministic
+    all_positions: list[Position] = []
+    for trader in cohort:
+        all_positions.extend(results.get(trader.proxy_wallet, []))
 
     return all_positions

@@ -87,8 +87,22 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
 
+# Lazy-init state — every public entry opens via _connect(), so this guarantees
+# the schema exists on first use even when a subsystem never called init_db.
+_db_initialized: bool = False
+_in_init: bool = False
+
+
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
+    global _db_initialized, _in_init
+    if not _db_initialized and not _in_init:
+        _in_init = True
+        try:
+            init_db()
+        finally:
+            _in_init = False
+        _db_initialized = True
     conn = sqlite3.connect(DB_PATH, timeout=5.0)
     _apply_pragmas(conn)
     try:

@@ -55,9 +55,12 @@ if str(_MONOREPO_ROOT) not in sys.path:
 
 try:
     from signal_tracker import log_signal as _log_signal
+    from cost_model import estimate_cost as _estimate_cost
 except ImportError:
     def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
         return -1
+    def _estimate_cost(*args, **kwargs):  # type: ignore[no-redef]
+        return 0.0
 
 log = logging.getLogger(__name__)
 
@@ -883,7 +886,7 @@ class Pipeline:
                     _log_signal(
                         system="poly2",
                         signal_type="polymarket",
-                        direction=outcome.outcome,
+                        direction=outcome.outcome.upper(),
                         estimated_edge=float(edge),
                         estimated_prob=float(true_prob),
                         market_price=float(market_prob),
@@ -891,6 +894,13 @@ class Pipeline:
                         condition_id=market.condition_id or None,
                         kelly_bet=float(k["bet"]),
                         kelly_fraction=float(k["adj_kelly"]),
+                        cost_estimate=_estimate_cost(
+                            "polymarket",
+                            price=float(market_prob),
+                            size_usd=float(k["bet"]),
+                            liquidity=float(market.liquidity or 0.0),
+                            spread=float(outcome.spread or 0.0),
+                        ),
                         raw_features={"category": market.category or None},
                     )
                 except Exception as exc:

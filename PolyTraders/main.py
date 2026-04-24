@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,11 +106,59 @@ def _tg_send(text: str) -> bool:
                 if resp.status != 200:
                     print(f"[WARN] Telegram returned HTTP {resp.status}")
                     ok = False
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            print(f"[ERROR] Telegram HTTP {exc.code}: {body[:500]}")
+            ok = False
         except Exception as exc:
             print(f"[ERROR] Telegram send failed: {exc}")
             ok = False
 
     return ok
+
+
+# ── Report formatting helpers ─────────────────────────────────────────────────
+
+_SEP = "─" * 34
+
+
+def _price_levels_opp(cur_price: float, edge: float) -> tuple[str, str, str]:
+    """
+    Return (entry_range, take_profit_range, stop_loss) for one opportunity.
+
+    entry_range  — where to set a limit order (buy dip up to current price)
+    tp_range     — target exit when market reprices toward estimated true prob
+    stop_loss    — cut the position if the market moves against you
+    """
+    def _c(x: float) -> str:
+        return f"{round(x * 100):.0f}c"
+
+    dip = min(0.02, edge / 2)
+    entry_lo = max(cur_price - dip, 0.01)
+
+    tp_lo = min(cur_price + edge * 0.70, 0.96)
+    tp_hi = min(cur_price + edge * 1.20, 0.96)
+
+    sl = max(cur_price - edge * 1.5, cur_price * 0.80, 0.02)
+
+    # &lt; is HTML-escaped "<" — required inside <code> tags in Telegram HTML mode
+    return (
+        f"{_c(entry_lo)} – {_c(cur_price)}",
+        f"{_c(tp_lo)} – {_c(tp_hi)}",
+        f"&lt; {_c(sl)}",
+    )
+
+
+def _entry_timing(cur_price: float, avg_entry: float, edge: float) -> str:
+    """Comment on whether you're entering before, with, or after smart money."""
+    delta = cur_price - avg_entry
+    if delta < -0.02:
+        return f"price {abs(delta)*100:.1f}pp BELOW smart money entry — buy carefully"
+    if delta <= 0.01:
+        return "at smart money entry — good timing"
+    if delta <= 0.03:
+        return f"~{delta*100:.1f}pp above their entry — still reasonable"
+    return f"{delta*100:.1f}pp above their entry — consider waiting for dip"
 
 
 # ── Report formatter ──────────────────────────────────────────────────────────
@@ -126,65 +175,81 @@ def _format_report(
     sk_h   = (now.hour - 6) % 24
     ts_sk  = f"{sk_h:02d}:{now.minute:02d} SK"
 
+    # ── Header ────────────────────────────────────────────────────────────────
     lines = [
-        "<b>PolyTraders -- Smart Money Signals</b>",
-        f"<code>{ts_utc} ({ts_sk})</code>",
+        "<b>PolyTraders  |  Smart Money Signals</b>",
+        f"<code>{ts_utc}  ({ts_sk})</code>",
         "",
-        f"<b>Leaderboard:</b> top {len(traders)} traders by {time_period.title()} PnL",
-        f"<b>Open positions scanned:</b> {n_positions}",
-        f"<b>Your bankroll:</b> ${bankroll:.0f} USDC",
-        "",
+        f"<b>Leaderboard:</b> {len(traders)} traders  ·  {time_period.title()} PnL",
+        f"<b>Positions scanned:</b> {n_positions}  ·  <b>Bankroll:</b> ${bankroll:.0f} USDC",
     ]
 
     if not opportunities:
         lines += [
+            "",
             "<i>No consensus opportunities this run.</i>",
-            "<i>(Need >= 2 top traders in the same market/outcome.)</i>",
+            "<i>(Need ≥2 top traders in the same market/outcome.)</i>",
+            "",
+            "<i>Signal = smart-money consensus. Not financial advice.</i>",
         ]
-    else:
-        lines.append(
-            f"<b>{len(opportunities)} opportunities found "
-            f"(showing top {min(len(opportunities), MAX_OPPS)}):</b>"
-        )
-        lines.append("")
+        return "\n".join(lines)
 
-        for i, opp in enumerate(opportunities[:MAX_OPPS], 1):
-            price_c = opp.cur_price * 100
-            edge_pp = opp.estimated_edge * 100
-            entry_c = opp.weighted_avg_entry * 100
+    n_shown = min(len(opportunities), MAX_OPPS)
+    lines += [
+        f"<b>Signals found:</b> {len(opportunities)}  ·  showing top {n_shown}",
+        "",
+        _SEP,
+        "",
+    ]
 
-            # Trend tag
-            delta = opp.cur_price - opp.weighted_avg_entry
-            if delta > 0.03:
-                trend = "up " + f"+{delta*100:.1f}pp vs entry"
-            elif delta < -0.03:
-                trend = "down " + f"{delta*100:.1f}pp vs entry"
-            else:
-                trend = "flat (near entry)"
+    # ── Opportunities ─────────────────────────────────────────────────────────
+    for i, opp in enumerate(opportunities[:MAX_OPPS], 1):
+        price_c   = opp.cur_price * 100
+        edge_pp   = opp.estimated_edge * 100
+        entry_c   = opp.weighted_avg_entry * 100
+        mean_exp  = opp.total_exposure / max(opp.n_smart_traders, 1)
 
-            holders = ", ".join(_esc(n) for n in opp.smart_trader_names[:5])
-            if len(opp.smart_trader_names) > 5:
-                holders += f" +{len(opp.smart_trader_names)-5} more"
+        entry_range, tp_range, sl_str = _price_levels_opp(opp.cur_price, opp.estimated_edge)
+        timing_note = _entry_timing(opp.cur_price, opp.weighted_avg_entry, opp.estimated_edge)
 
-            lines += [
-                f"<b>{i}. {_esc(opp.title[:75])}</b>",
-                f"   Side: <code>{opp.outcome}</code>"
-                f"  Price: <code>{price_c:.1f}c</code>"
-                f"  Edge: <code>+{edge_pp:.1f}pp</code>",
-                f"   Smart traders: <code>{opp.n_smart_traders}/{opp.total_traders_checked}</code>"
-                f"  ({trend})",
-                f"   Avg entry: <code>{entry_c:.1f}c</code>"
-                f"  Total exposure: <code>${opp.total_exposure:,.0f}</code>",
-                f"   <b>Kelly bet: ${opp.kelly_bet:.2f}</b>"
-                f"  (full Kelly {opp.kelly_full*100:.1f}% -> quarter-Kelly)",
-                f"   Holders: <code>{holders}</code>",
-                "",
-            ]
+        holders = ", ".join(_esc(n) for n in opp.smart_trader_names[:5])
+        if len(opp.smart_trader_names) > 5:
+            holders += f" +{len(opp.smart_trader_names)-5} more"
+
+        title_esc = _esc(opp.title[:75]) + ("…" if len(opp.title) > 75 else "")
+
+        # Rank marker: ★ for top 3, ◆ for rest
+        marker = "★" if i <= 3 else "◆"
+
+        lines += [
+            # Header
+            f"<b>{marker} {i}.  BUY {opp.outcome}</b>  ·  {opp.n_smart_traders}/{opp.total_traders_checked} smart traders",
+            f'<a href="{opp.url}">{title_esc}</a>',
+            "",
+            # Stats
+            f"  Price <code>{price_c:.1f}c</code>"
+            f"  ·  Edge <b>+{edge_pp:.1f}pp</b>"
+            f"  ·  Kelly bet <b>${opp.kelly_bet:.2f}</b>"
+            f"  (full {opp.kelly_full*100:.1f}%)",
+            f"  Signal: count <code>{opp.count_signal*100:.0f}%</code>"
+            f" · size <code>{opp.size_signal*100:.0f}%</code>"
+            f"  ·  avg exposure <code>${mean_exp:,.0f}</code>",
+            f"  Total exposure: <code>${opp.total_exposure:,.0f}</code>"
+            f"  ·  smart entry avg: <code>{entry_c:.1f}c</code>",
+            "",
+            # Price levels
+            f"  Buy zone:    <code>{entry_range}</code>   ← {timing_note}",
+            f"  Take profit: <code>{tp_range}</code>   ← exit as market corrects",
+            f"  Stop loss:   <code>{sl_str}</code>          ← cut if market disagrees",
+            "",
+            f"  Holders: {holders}",
+            _SEP,
+            "",
+        ]
 
     lines += [
-        "---",
-        "<i>Signal = smart-money consensus, NOT financial advice.</i>",
-        "<i>Kelly sizing = quarter-Kelly on small bankroll. Bet responsibly.</i>",
+        "<i>Signal = smart-money consensus. Kelly = quarter-Kelly sizing.</i>",
+        "<i>Not financial advice. Bet responsibly.</i>",
     ]
 
     return "\n".join(lines)
@@ -238,7 +303,7 @@ def main() -> None:
     # ── Step 2: Positions ─────────────────────────────────────────────────────
     from positions import fetch_all_positions
     print(f"\n[2/4] Fetching open positions (up to {TOP_N_TRADERS} traders)...")
-    all_positions = fetch_all_positions(traders, max_traders=TOP_N_TRADERS, delay=0.4)
+    all_positions = fetch_all_positions(traders, max_traders=TOP_N_TRADERS)
     print(f"      {len(all_positions)} qualifying positions collected")
 
     if not all_positions:

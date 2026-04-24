@@ -41,9 +41,12 @@ if str(_MONOREPO_ROOT) not in sys.path:
 
 try:
     from signal_tracker import log_signal as _log_signal
+    from cost_model import estimate_cost as _estimate_cost
 except ImportError:
     def _log_signal(*args, **kwargs):  # type: ignore[no-redef]
         return -1
+    def _estimate_cost(*args, **kwargs):  # type: ignore[no-redef]
+        return 0.0
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -514,6 +517,14 @@ class OpportunityRanker:
                         market_price=float(bet.outcome.market_price),
                         market_slug=getattr(bet.market, "slug", None) or None,
                         condition_id=getattr(bet.market, "condition_id", None) or None,
+                        kelly_bet=float(bet.bet_size_usd),
+                        cost_estimate=_estimate_cost(
+                            "polymarket",
+                            price=float(bet.outcome.market_price),
+                            size_usd=float(bet.bet_size_usd),
+                            liquidity=float(getattr(bet.market, "liquidity", 0.0) or 0.0),
+                            spread=float(getattr(bet.outcome, "spread", 0.0) or 0.0),
+                        ),
                         raw_features={"heuristic": "edge_estimator_composite"},
                     )
                 except Exception as exc:

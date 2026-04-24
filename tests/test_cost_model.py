@@ -49,3 +49,23 @@ def test_cost_bounded_below_50pct():
 def test_unknown_market_type_returns_zero():
     from cost_model import estimate_cost
     assert estimate_cost("unknown_thing", price=1, size_usd=1) == 0.0
+
+
+def test_polymarket_unknown_liquidity_does_not_trigger_cost_cap():
+    """Regression: Polymarket API sometimes returns liquidity=0/null. Earlier formula
+    divided by max(liquidity, 1.0), which made impact explode and capped every signal
+    at the _COST_CAP. Unknown liquidity must fall back to spread+gas only."""
+    from cost_model import estimate_cost
+    cost = estimate_cost("polymarket", price=0.5, size_usd=40, liquidity=0.0, spread=0.0)
+    # half_spread floor 0.005 + gas_pct 0.05/40 ≈ 0.00125 → one_way ≈ 0.00625 → rt ≈ 0.0125
+    assert cost < 0.05, f"Unknown-liquidity cost should be small, got {cost}"
+
+
+def test_polymarket_pathological_spread_does_not_trigger_cost_cap():
+    """Regression: thin CLOB books often report ask-bid widths approaching 1.0 when
+    there are no real counterparties. Earlier half_spread was uncapped, so every
+    signal on a thin book hit the _COST_CAP. Spread must be capped per leg too."""
+    from cost_model import estimate_cost
+    cost = estimate_cost("polymarket", price=0.5, size_usd=40, liquidity=5_000, spread=1.0)
+    # Capped: half_spread ≤ 0.10, impact ≤ 0.10 → one_way ≤ 0.20 + small gas → rt ≤ 0.40
+    assert cost < 0.45, f"Pathological-spread cost should not hit cap, got {cost}"

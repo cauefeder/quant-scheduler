@@ -48,9 +48,19 @@ def estimate_cost(
     return 0.0  # unknown market type — fail open, don't filter
 
 
+_MAX_ONE_WAY_IMPACT = 0.10  # cap per-leg price impact so missing/tiny liquidity
+                            # data never silently caps every signal at _COST_CAP
+_MAX_ONE_WAY_SPREAD = 0.10  # cap per-leg spread for the same reason: thin CLOB books
+                            # often report ask-bid widths approaching 1.0, which
+                            # would otherwise cap every signal
+
+
 def _polymarket_cost(size_usd: float, liquidity: float, spread: float) -> float:
-    half_spread = max(spread / 2.0, _MIN_HALF_SPREAD)
+    half_spread = min(max(spread / 2.0, _MIN_HALF_SPREAD), _MAX_ONE_WAY_SPREAD)
     gas_pct = _GAS_FEE_USD / max(size_usd, 1.0)
-    impact = (size_usd / max(liquidity, 1.0)) * _IMPACT_COEFF
+    if liquidity > 0:
+        impact = min((size_usd / liquidity) * _IMPACT_COEFF, _MAX_ONE_WAY_IMPACT)
+    else:
+        impact = 0.0  # unknown liquidity — skip impact rather than assume worst case
     one_way = half_spread + gas_pct + impact
     return min(2.0 * one_way, _COST_CAP - 1e-9)

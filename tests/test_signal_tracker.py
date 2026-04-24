@@ -295,3 +295,28 @@ def test_update_daily_metrics_aggregates_per_system(fresh_tracker):
     assert summary["signals_resolved"] == 2
     assert summary["win_rate"] == pytest.approx(0.5)
     assert summary["total_pnl"] == pytest.approx(5.0)
+
+
+def test_log_signal_auto_initializes_schema_on_fresh_db(tmp_db_path, monkeypatch):
+    """Regression: log_signal must create schema when called against a DB that was
+    never explicitly init_db'd. Subsystems rely on this — otherwise their
+    try/except swallows 'no such table' errors and every signal is silently lost."""
+    import importlib
+    import signal_tracker
+    importlib.reload(signal_tracker)
+    monkeypatch.setattr(signal_tracker, "DB_PATH", tmp_db_path)
+    assert not tmp_db_path.exists()
+
+    sig_id = signal_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="auto-init-test",
+    )
+    assert sig_id > 0
+
+    conn = sqlite3.connect(tmp_db_path)
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    conn.close()
+    assert "signals" in tables
+    assert "schema_version" in tables

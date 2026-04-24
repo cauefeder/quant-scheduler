@@ -5,6 +5,7 @@ Main orchestrator — runs all models, generates reports, sends Telegram.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from datetime import datetime
 from typing import Optional
@@ -104,8 +105,8 @@ def run_full_pipeline(
         f.write(report)
     logger.info(f"Report saved: {report_path}")
 
-    # --- Print to console ---
-    print("\n" + report + "\n")
+    # --- Print to console (UTF-8 safe for Windows cp1252 terminals) ---
+    sys.stdout.buffer.write(("\n" + report + "\n").encode("utf-8", errors="replace"))
 
     # --- Send Telegram ---
     if send_telegram:
