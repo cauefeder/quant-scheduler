@@ -56,6 +56,7 @@ POLY2_DIR        = PROJECTS_DIR / "Poly2"
 MODEL_DIR        = PROJECTS_DIR / "ModelTelegra," / "quant_desk"
 POLY_DIR         = PROJECTS_DIR / "Poly"
 POLYTRADERS_DIR  = PROJECTS_DIR / "PolyTraders"
+ALPHAFEED_DIR    = PROJECTS_DIR / "AlphaFeed"
 LOG_FILE         = PROJECTS_DIR / "scheduler.log"
 
 # Load credentials from .env at project root (never commit .env)
@@ -158,6 +159,47 @@ PROJECTS: list[dict] = [
                 "python", "main.py"],
         "timeout": 180,
         "capture_to_telegram": False,  # sends to Telegram natively
+    },
+]
+
+# ── AlphaFeed adapters ─────────────────────────────────────────────────────────
+# Run after the main projects so the dashboard always reflects the latest cycle.
+# quant_report.py reads polytraders.json + poly2.json → must be last.
+ALPHAFEED_ADAPTERS: list[dict] = [
+    {
+        "name": "AlphaFeed: poly2 macro",
+        "cwd": ALPHAFEED_DIR,
+        "cmd": [UV, "run", "--no-project", "--python", "3.11", "--with", "requests",
+                "python", "backend/adapters/poly2_export.py"],
+        "timeout": 180,
+        "capture_to_telegram": False,
+    },
+    {
+        "name": "AlphaFeed: polytraders signals",
+        "cwd": ALPHAFEED_DIR,
+        "cmd": [UV, "run", "--no-project", "--python", "3.11",
+                "--with", "requests,python-dotenv",
+                "python", "backend/adapters/polytraders_export.py"],
+        "timeout": 240,
+        "capture_to_telegram": False,
+    },
+    {
+        "name": "AlphaFeed: hedgepoly smart-money",
+        "cwd": ALPHAFEED_DIR,
+        "cmd": [UV, "run", "--no-project", "--python", "3.11",
+                "--with", "requests,python-dotenv,httpx,pandas",
+                "python", "backend/adapters/hedgepoly_export.py"],
+        "timeout": 240,
+        "capture_to_telegram": False,
+    },
+    {
+        "name": "AlphaFeed: quant XGBoost report",
+        "cwd": ALPHAFEED_DIR,
+        "cmd": [UV, "run", "--no-project", "--python", "3.11",
+                "--with", "httpx,xgboost,scikit-learn,numpy,pandas",
+                "python", "backend/adapters/quant_report.py"],
+        "timeout": 300,
+        "capture_to_telegram": False,
     },
 ]
 
@@ -312,6 +354,13 @@ def run_all(dry_run: bool = False) -> None:
             log.info("signal_tracker: resolved %d signals", resolved)
         except Exception as exc:
             log.warning("signal_tracker resolution failed: %s", exc)
+
+    # ── AlphaFeed: refresh dashboard reports (best-effort) ───────────────────
+    if ALPHAFEED_DIR.exists():
+        log.info("-" * 60)
+        log.info("AlphaFeed: refreshing dashboard reports")
+        for adapter in ALPHAFEED_ADAPTERS:
+            run_project(adapter, dry_run=dry_run)
 
 
 # ── Daemon loop ────────────────────────────────────────────────────────────────
