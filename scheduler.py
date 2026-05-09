@@ -160,6 +160,18 @@ PROJECTS: list[dict] = [
         "timeout": 180,
         "capture_to_telegram": False,  # sends to Telegram natively
     },
+    {
+        # BTC Leverage slice-1: BS-edge factor + paper exec + dashboard tab + Telegram.
+        # Live runtime contract documented at
+        # D:/Multi Factor/docs/superpowers/specs/2026-04-28-btc-leverage-slice1-design.md
+        "name": "Multi Factor BTC Leverage (slice 1)",
+        "cwd": Path("D:/Multi Factor"),
+        "cmd": [UV, "run", "--no-project", "--python", "3.12",
+                "--with", "numpy,pandas,scipy,pydantic,pyyaml,httpx",
+                "python", "-m", "multifactor.refresh"],
+        "timeout": 240,
+        "capture_to_telegram": True,   # forwards stdout (formatted ticket) to Telegram
+    },
 ]
 
 # ── AlphaFeed adapters ─────────────────────────────────────────────────────────
@@ -289,7 +301,11 @@ def run_project(project: dict, dry_run: bool = False) -> bool:
             return False
 
         if capture and result.stdout:
-            header = f"<b>Poly Kelly Scraper</b>\n<code>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</code>\n\n"
+            # Dynamic header per project (was hardcoded to "Poly Kelly Scraper"
+            # which became misleading once a second capture-to-telegram project
+            # was added). Plain text — _tg_send doesn't set parse_mode.
+            stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+            header = f"[{name}] {stamp}\n\n"
             _tg_send(header + result.stdout[:3500])
             log.info(f"[{name}] Output forwarded to Telegram ({len(result.stdout)} chars)")
 
