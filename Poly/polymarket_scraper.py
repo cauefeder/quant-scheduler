@@ -35,6 +35,16 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+# Configure stderr-only logging so noise doesn't reach Telegram via the
+# scheduler's stdout-capture path (spec §7). When run standalone, stderr
+# renders below stdout in the terminal — full diagnostic flow visible.
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stderr,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 _MONOREPO_ROOT = Path(__file__).resolve().parents[1]  # scraper.py → Poly → Projetos
 if str(_MONOREPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_MONOREPO_ROOT))
@@ -115,7 +125,7 @@ class PolymarketAPI:
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.RequestException as e:
-            print(f"  [API Error] {e}")
+            log.info(f"[API Error] {e}")
             return None
 
     # ── Gamma API (market metadata) ───────────────────────────────────────
@@ -307,27 +317,27 @@ class MarketScanner:
         """Scan markets and return filtered, enriched Market objects."""
         raw_markets = []
         for page in range(num_pages):
-            print(f"  Fetching page {page + 1}...")
+            log.info(f"Fetching page {page + 1}...")
             batch = self.api.get_markets(limit=100, offset=page * 100)
             if not batch:
                 break
             raw_markets.extend(batch)
             time.sleep(0.5)  # polite rate limiting
 
-        print(f"  Fetched {len(raw_markets)} raw markets. Filtering...")
+        log.info(f"Fetched {len(raw_markets)} raw markets. Filtering...")
         markets = []
         for raw in raw_markets:
             market = self._parse_market(raw)
             if market and self._passes_filter(market):
                 markets.append(market)
 
-        print(f"  {len(markets)} markets pass filters. Enriching with orderbook data...")
+        log.info(f"{len(markets)} markets pass filters. Enriching with orderbook data...")
         enriched = []
         for i, market in enumerate(markets):
             self._enrich_with_orderbook(market)
             enriched.append(market)
             if (i + 1) % 10 == 0:
-                print(f"    Enriched {i + 1}/{len(markets)}...")
+                log.debug(f"Enriched {i + 1}/{len(markets)}...")
                 time.sleep(0.3)
 
         return enriched
@@ -636,15 +646,6 @@ class RiskManager:
 
 # ─── Display / Reports ───────────────────────────────────────────────────────
 
-def print_banner():
-    print("""
-╔══════════════════════════════════════════════════════════════════╗
-║       POLYMARKET KELLY CRITERION POSITION SIZER                ║
-║       Short-Term Prediction Market Opportunity Scanner         ║
-╚══════════════════════════════════════════════════════════════════╝
-    """)
-
-
 def print_bets(bets: list[KellyBet], bankroll: float):
     """Pretty-print the recommended bets."""
     if not bets:
@@ -725,7 +726,7 @@ def save_results(bets: list[KellyBet], summary: dict, filename: str = "results.j
     }
     with open(filename, "w") as f:
         json.dump(output, f, indent=2, default=str)
-    print(f"  📁 Results saved to {filename}")
+    log.info(f"Results saved to {filename}")
 
 
 # ─── Main Entry Point ────────────────────────────────────────────────────────
@@ -752,10 +753,10 @@ def main():
                         help="Output JSON file (default: results.json)")
     args = parser.parse_args()
 
-    print_banner()
-    print(f"  Settings: bankroll=${args.bankroll:,.0f} | kelly={args.kelly_fraction} | "
-          f"max_days={args.max_days} | min_edge={args.min_edge:.0%}")
-    print()
+    log.info(
+        f"Settings: bankroll=${args.bankroll:,.0f} | kelly={args.kelly_fraction} | "
+        f"max_days={args.max_days} | min_edge={args.min_edge:.0%}"
+    )
 
     # Initialize components
     api = PolymarketAPI()
@@ -775,36 +776,32 @@ def main():
     )
 
     # Step 1: Scan markets
-    print("  [1/4] Scanning Polymarket for short-term markets...")
+    log.info("[1/4] Scanning Polymarket for short-term markets...")
     markets = scanner.scan(num_pages=args.pages)
-    print(f"  Found {len(markets)} qualifying markets.\n")
+    log.info(f"Found {len(markets)} qualifying markets.")
 
     if not markets:
-        print("  No markets found. Try adjusting filters (--max-days, --min-volume).")
+        log.info("No markets found. Try adjusting filters (--max-days, --min-volume).")
         return
 
     # Step 2: Find opportunities
-    print("  [2/4] Analyzing edges with Kelly Criterion...")
+    log.info("[2/4] Analyzing edges with Kelly Criterion...")
     opportunities = ranker.find_opportunities(markets)
-    print(f"  Found {len(opportunities)} opportunities with edge > {args.min_edge:.0%}.\n")
+    log.info(f"Found {len(opportunities)} opportunities with edge > {args.min_edge:.0%}.")
 
     # Step 3: Apply risk management
-    print("  [3/4] Applying risk management limits...")
+    log.info("[3/4] Applying risk management limits...")
     approved_bets = risk_mgr.apply_limits(opportunities)
-    print(f"  Approved {len(approved_bets)} bets after risk limits.\n")
+    log.info(f"Approved {len(approved_bets)} bets after risk limits.")
 
     # Step 4: Display & save
-    print("  [4/4] Generating report...\n")
+    log.info("[4/4] Generating report...")
     print_bets(approved_bets, args.bankroll)
 
     summary = risk_mgr.portfolio_summary(approved_bets)
     print_portfolio_summary(summary, args.bankroll)
 
     save_results(approved_bets, summary, args.output)
-
-    print("\n  ⚠  DISCLAIMER: This is a research tool, NOT financial advice.")
-    print("  Edge estimates are heuristic demos. Replace with your own research.")
-    print("  Always verify markets on https://polymarket.com before betting.\n")
 
 
 if __name__ == "__main__":
