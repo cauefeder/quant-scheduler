@@ -58,6 +58,16 @@ except ImportError:
     def _estimate_cost(*args, **kwargs):  # type: ignore[no-redef]
         return 0.0
 
+from lib.telegram_format import (
+    header,
+    stat_line,
+    signal_block,
+    tail_summary,
+    summary_panel,
+    footer,
+    truncate_smart,
+)
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
@@ -644,54 +654,6 @@ class RiskManager:
         }
 
 
-# ─── Display / Reports ───────────────────────────────────────────────────────
-
-def print_bets(bets: list[KellyBet], bankroll: float):
-    """Pretty-print the recommended bets."""
-    if not bets:
-        print("\n  ⚠  No opportunities found matching your criteria.")
-        return
-
-    print(f"\n{'='*80}")
-    print(f"  TOP OPPORTUNITIES (Bankroll: ${bankroll:,.2f})")
-    print(f"{'='*80}\n")
-
-    for i, bet in enumerate(bets, 1):
-        days = bet.market.days_to_resolution
-        days_str = f"{days:.1f}d" if days else "N/A"
-
-        print(f"  #{i} | {bet.confidence} confidence | Score: {bet.score:.2f}")
-        print(f"  ┌─ Market: {bet.market.question[:70]}")
-        print(f"  ├─ Resolves in: {days_str} | 24h Vol: ${bet.market.volume_24h:,.0f} | Liq: ${bet.market.liquidity:,.0f}")
-        print(f"  ├─ Market Price (YES): {bet.outcome.market_price:.1%}  |  Spread: {bet.outcome.spread:.3f}")
-        print(f"  ├─ Your Edge: {bet.edge:.1%}  |  EV: {bet.expected_value:.1%}  |  Odds: {bet.odds_decimal:.2f}x")
-        print(f"  ├─ Full Kelly: {bet.kelly_fraction:.2%}  →  Adj Kelly: {bet.adj_kelly_fraction:.2%}")
-        print(f"  └─ 💰 BET SIZE: ${bet.bet_size_usd:.2f} ({bet.adj_kelly_fraction:.2%} of bankroll)")
-        print()
-
-
-def print_portfolio_summary(summary: dict, bankroll: float):
-    """Print portfolio risk summary."""
-    if summary["total_bets"] == 0:
-        return
-
-    print(f"{'='*80}")
-    print(f"  PORTFOLIO RISK SUMMARY")
-    print(f"{'='*80}")
-    print(f"  Bankroll:           ${bankroll:,.2f}")
-    print(f"  Total Bets:         {summary['total_bets']}")
-    print(f"  Total Exposure:     ${summary['total_exposure']:,.2f} ({summary['exposure_pct']:.1f}%)")
-    print(f"  Avg Edge:           {summary['avg_edge']:.2%}")
-    print(f"  Weighted EV:        {summary['weighted_ev']:.2%}")
-    print(f"  Expected Profit:    ${summary['expected_profit']:,.2f}")
-    print(f"  Worst Case:         ${summary['worst_case']:,.2f}")
-    print(f"  Best Case:          ${summary['best_case']:,.2f}")
-    print(f"\n  Category Breakdown:")
-    for cat, amt in summary["category_breakdown"].items():
-        print(f"    {cat[:30]:30s}  ${amt:,.2f}")
-    print()
-
-
 # ─── Save Results to JSON ────────────────────────────────────────────────────
 
 def save_results(bets: list[KellyBet], summary: dict, filename: str = "results.json"):
@@ -727,6 +689,91 @@ def save_results(bets: list[KellyBet], summary: dict, filename: str = "results.j
     with open(filename, "w") as f:
         json.dump(output, f, indent=2, default=str)
     log.info(f"Results saved to {filename}")
+
+
+# ─── Telegram-bound Report ───────────────────────────────────────────────────
+
+def render_report(
+    *,
+    bankroll: float,
+    settings: str,
+    n_screened: int,
+    approved_bets: list,  # list[KellyBet]
+    summary: dict,        # PortfolioSummary dict (cf. RiskManager.portfolio_summary)
+    asof: datetime,
+) -> str:
+    """Render the Telegram-bound bet-picker report.
+
+    Spec §6. Composed from lib.telegram_format helpers; emits plain
+    text + emoji + spacing only.
+    """
+    parts: list[str] = [
+        header("Polymarket Kelly", asof),
+        stat_line(
+            ("Bankroll", f"${bankroll:,.0f}"),
+            ("Opps screened", f"{n_screened} ({settings})"),
+        ),
+    ]
+
+    # Empty-state path.
+    if not approved_bets:
+        parts.extend([
+            "",
+            "No opportunities matched filters.",
+            "",
+            f"{n_screened} markets scanned · 0 passed risk gates",
+            "Filters likely too tight or markets too efficient today.",
+            footer("Not financial advice."),
+        ])
+        return truncate_smart("\n".join(parts), limit=3500)
+
+    # Top 3 detail blocks.
+    top_n = min(3, len(approved_bets))
+    parts.append("")
+    for i, bet in enumerate(approved_bets[:top_n], start=1):
+        days_raw = bet.market.days_to_resolution or 0
+        days = max(1, int(round(days_raw)))
+        vol_k = int(round(bet.market.volume_24h / 1000))
+        liq_k = int(round(bet.market.liquidity / 1000))
+        title = bet.market.question.strip()
+        # Trim long titles to keep one line per
+        if len(title) > 70:
+            title = title[:67] + "…"
+        parts.append(signal_block(
+            rank=i,
+            headline=f"${bet.bet_size_usd:,.2f} · edge {bet.edge:+.1%}",
+            title=title,
+            details=[
+                f"Yes @ {bet.outcome.market_price:.1%}  ·  resolves {days}d",
+                f"vol 24h ${vol_k}k  ·  liq ${liq_k}k",
+            ],
+        ))
+        parts.append("")  # blank line between blocks
+
+    # Tail summary.
+    remaining = len(approved_bets) - top_n
+    if remaining > 0:
+        edges = sorted(b.edge for b in approved_bets[top_n:])
+        parts.append(tail_summary(
+            remaining,
+            edge_range=(edges[0], edges[-1]),
+            suffix="on polymarket.com",
+        ))
+        parts.append("")
+
+    # Portfolio summary panel.
+    parts.append(summary_panel([
+        ("Bankroll", f"${bankroll:,.0f}",
+         "Open", f"${summary['total_exposure']:,.2f}"),
+        ("Edge avg", f"{summary['avg_edge']:+.1%}",
+         "EV*", f"+${summary['expected_profit']:,.2f}"),
+        ("Exposure", f"{summary['exposure_pct']:.1f}%",
+         "Worst", f"-${abs(summary['worst_case']):,.2f}"),
+    ]))
+
+    parts.append(footer("Not financial advice. *EV is heuristic; verify on Polymarket."))
+
+    return truncate_smart("\n".join(parts), limit=3500)
 
 
 # ─── Main Entry Point ────────────────────────────────────────────────────────
@@ -796,10 +843,17 @@ def main():
 
     # Step 4: Display & save
     log.info("[4/4] Generating report...")
-    print_bets(approved_bets, args.bankroll)
-
     summary = risk_mgr.portfolio_summary(approved_bets)
-    print_portfolio_summary(summary, args.bankroll)
+
+    report = render_report(
+        bankroll=args.bankroll,
+        settings=f"edge ≥{args.min_edge:.0%}, ≤{args.max_days}d",
+        n_screened=len(opportunities),
+        approved_bets=approved_bets,
+        summary=summary,
+        asof=datetime.now(timezone.utc),
+    )
+    print(report)
 
     save_results(approved_bets, summary, args.output)
 
