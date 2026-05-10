@@ -135,11 +135,21 @@ def tail_summary(remaining: int, edge_range: tuple[float, float] | None,
 
 def summary_panel(rows: list[tuple[str, str, str, str]]) -> str:
     """Two-column vertical-bar block at end of report.
+
+    `rows` is a variable-length list of 4-tuples
+    `(left_key, left_value, right_key, right_value)`. Spacing rule:
+    - left_key column padded to max(left_key length) + 1 space.
+    - left_value column padded to max(left_value length) + 5 spaces.
+    - right_key column padded to max(right_key length) + 1 space.
+    - right_value rendered as-is.
+
     summary_panel([('Bankroll', '$1,000', 'Open', '$43.06'),
-                   ('Edge avg', '+5.3%', 'EV', '+$8.20')])
+                   ('Edge avg', '+5.3%', 'EV', '+$8.20'),
+                   ('Exposure', '4.1%',  'Worst', '-$41')])
     →
     │ Bankroll $1,000     Open  $43.06
     │ Edge avg +5.3%      EV    +$8.20
+    │ Exposure 4.1%       Worst -$41
     """
 
 def footer(text: str = "Not financial advice.") -> str:
@@ -242,6 +252,8 @@ The scheduler captures **stdout only** for forwarding to Telegram. stderr is cap
 Only the rendered report from §6: header + stat_line + 1-3 signal_blocks + (tail_summary?) + summary_panel + footer. Composed by one `print(rendered_text)` at the end of `main()`.
 
 ### What moves off stdout
+
+**Implementation note**: grep `polymarket_scraper.py` for `print(`. Every match is either part of the new report (one final composed `print(rendered_text)` at the end of `main()`) or becomes `log.info` / `log.debug`. The table below covers the common cases; treat any other `print(...)` call as `log.info` unless it's clearly part of the rendered report.
 
 These all become `log.info(...)` or `log.debug(...)` calls instead of `print(...)`:
 
@@ -386,9 +398,22 @@ Each gets 1–3 lines per the scope decision. The HTML-via-own-POST projects are
 | `test_under_3500_chars` | parametrize over the 3 fixtures | `len(text.encode("utf-8")) < 3500` |
 | `test_no_html_no_markdown` | parametrize over fixtures | no `<`, `**`, `__`, `[…](…)` in output |
 
-### Workflow
+### Workflow (golden-file scaffolding pattern)
 
-First run scaffolds the golden files and fails with "wrote it; inspect and rerun" — same pattern as slice-1 T13. Inspect the 3 .txt files; rerun; tests go green.
+The golden tests use this convention (same as slice-1 T13 `test_telegram_format`):
+
+```python
+def test_happy_path_top_3_with_tail(...) -> None:
+    text = render(fixture)
+    path = GOLDEN / "happy_path.txt"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        pytest.fail(f"Golden file {path.name} did not exist; wrote it. Inspect and rerun.")
+    assert text == path.read_text(encoding="utf-8")
+```
+
+First pytest run: tests fail because golden files don't exist yet, but the scaffolding writes them. Inspect each `.txt` file by eye to confirm it matches §6's intended layout. Second pytest run: tests pass (text == file contents). Only commit once both pass on the second run.
 
 ### Out of scope
 
