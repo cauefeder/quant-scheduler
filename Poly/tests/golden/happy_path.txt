@@ -1,0 +1,25 @@
+📊 Polymarket Kelly  ·  2026-05-09  ·  12:00 UTC
+Bankroll $1,000  ·  Opps screened 10 (edge ≥3%, ≤30d)
+
+● #1  $15.31 · edge +6.0%
+  Italy wins Eurovision 2026
+  Yes @ 3.1%  ·  resolves 6d
+  vol 24h $63k  ·  liq $78k
+
+● #2  $12.84 · edge +5.0%
+  Bitcoin dips to $60k in May
+  Yes @ 2.6%  ·  resolves 23d
+  vol 24h $79k  ·  liq $121k
+
+● #3  $12.91 · edge +5.0%
+  Aliens confirmed by May 31
+  Yes @ 3.1%  ·  resolves 22d
+  vol 24h $905k  ·  liq $156k
+
++ 7 more (edge 3-4%) on polymarket.com
+
+│ Bankroll $1,000     Open  $41.06
+│ Edge avg +5.3%      EV*   +$8.20
+│ Exposure 4.1%       Worst -$41.06
+
+— Not financial advice. *EV is heuristic; verify on Polymarket.

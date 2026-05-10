@@ -1,0 +1,9 @@
+📊 Polymarket Kelly  ·  2026-05-09  ·  12:00 UTC
+Bankroll $1,000  ·  Opps screened 300 (edge ≥3%, ≤30d)
+
+No opportunities matched filters.
+
+300 markets scanned · 0 passed risk gates
+Filters likely too tight or markets too efficient today.
+
+— Not financial advice.
