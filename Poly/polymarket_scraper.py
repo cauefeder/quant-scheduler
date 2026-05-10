@@ -35,6 +35,14 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+# Windows consoles default to cp1252; force UTF-8 so the report's emoji
+# (📊 ●) survive a direct `python polymarket_scraper.py` invocation.
+# scheduler.py already exports PYTHONIOENCODING=utf-8 + PYTHONUTF8=1
+# for subprocesses, so this is purely defense for manual terminal runs.
+# Same pattern as multifactor/refresh.py in the slice-1 sibling project.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # Configure stderr-only logging so noise doesn't reach Telegram via the
 # scheduler's stdout-capture path (spec §7). When run standalone, stderr
 # renders below stdout in the terminal — full diagnostic flow visible.
