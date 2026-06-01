@@ -10,7 +10,7 @@ with open(".env", encoding="utf-8") as f:
             os.environ[k.strip()] = v.strip()
 
 token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-url = f"https://api.telegram.org/bot{8238889935:AAFiR1llU7O2_6FpAq5e9h5nqeH_wg1D3tY}/getUpdates"
+url = f"https://api.telegram.org/bot{token}/getUpdates"
 resp = requests.get(url, timeout=10)
 data = resp.json()
 

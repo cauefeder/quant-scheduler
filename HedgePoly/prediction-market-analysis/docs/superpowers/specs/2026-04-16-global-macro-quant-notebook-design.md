@@ -191,7 +191,7 @@ EURUSD=X   Ranging    Contracting  BEARISH   58%     4.0%
 
 ### 6.2 Telegram Report
 
-- Config must be loaded by calling `load_config()` from `utils.py` — do NOT read `config.toml` directly via `tomllib.load()`. The `allowed_chat_ids` field is stored as a plain string (`"-5018202813"`) in `config.toml`, not a TOML array. `load_config()` handles the comma-split and returns `cfg.allowed_chat_ids` as `list[int]`. Accessing the TOML directly would yield a string and the send loop would silently iterate over characters.
+- Config must be loaded by calling `load_config()` from `utils.py` — do NOT read `config.toml` directly via `tomllib.load()`. The `allowed_chat_ids` field is stored as a plain string (e.g. `"-1001234567890"`) in `config.toml`, not a TOML array. `load_config()` handles the comma-split and returns `cfg.allowed_chat_ids` as `list[int]`. Accessing the TOML directly would yield a string and the send loop would silently iterate over characters.
 - Iterate over `cfg.allowed_chat_ids` (list of int) — not a single `chat_id`
 - `utils.py` uses `tomllib` (Python ≥3.11 stdlib) with a `tomli` fallback. The project `.venv` runs Python 3.9, so `tomli` is the active path. Do NOT add the `toml` package — it is not used elsewhere in the project.
 - Send via `httpx` using the same chunk-at-4000-chars pattern as `send_report.py`
