@@ -111,6 +111,11 @@ PROJECTS: list[dict] = [
                 "python", "polymarket_telegram_bot.py"],
         "timeout": 180,
         "capture_to_telegram": False,
+        # Paused 2026-06-27 after E2 report (signal_pnl_report.md):
+        # 130 resolved signals at 27.7% win rate and -$830 realised P&L.
+        # Source files stay runnable; only the scheduled Telegram delivery is paused.
+        "enabled": False,
+        "disabled_reason": "E2 P&L report shows -$830 over 130 resolved bets (WR 27.7%)",
     },
     {
         "name": "Poly2 Macro Report 1",
@@ -119,6 +124,8 @@ PROJECTS: list[dict] = [
                 "python", "macro_report1.py"],
         "timeout": 240,
         "capture_to_telegram": False,
+        "enabled": False,
+        "disabled_reason": "shares poly2 signal source — paused alongside Poly2 Kelly Bot",
     },
     {
         "name": "Poly2 Macro Report 2",
@@ -127,6 +134,8 @@ PROJECTS: list[dict] = [
                 "python", "macro_report2.py"],
         "timeout": 240,
         "capture_to_telegram": False,
+        "enabled": False,
+        "disabled_reason": "shares poly2 signal source — paused alongside Poly2 Kelly Bot",
     },
     {
         # ModelTelegra real project lives in quant_desk/ subdirectory
@@ -149,6 +158,11 @@ PROJECTS: list[dict] = [
                 "python", "polymarket_scraper.py"],
         "timeout": 240,
         "capture_to_telegram": True,
+        # Paused 2026-06-27 after E2 report (signal_pnl_report.md):
+        # 598 resolved signals at 18.4% win rate and -$4,081 realised P&L.
+        # The worst-performing system in the stack. Source stays runnable.
+        "enabled": False,
+        "disabled_reason": "E2 P&L report shows -$4,081 over 598 resolved bets (WR 18.4%)",
     },
     {
         # PolyTraders: smart-money copy-trade signals via leaderboard + Kelly
@@ -261,12 +275,22 @@ def run_project(project: dict, dry_run: bool = False) -> bool:
     Run a single project as a subprocess.
     If capture_to_telegram=True, forwards stdout to Telegram.
     Returns True on success.
+
+    Honors `enabled: False` to skip a project entirely (Telegram delivery
+    and execution both paused) — used to retire systems that the E2 P&L
+    report flagged as value-destructive while keeping their source files
+    runnable on demand.
     """
     name = project["name"]
     cwd  = project["cwd"]
     cmd  = project["cmd"]
     timeout = project.get("timeout", 120)
     capture = project.get("capture_to_telegram", False)
+
+    if project.get("enabled", True) is False:
+        reason = project.get("disabled_reason", "marked disabled")
+        log.info(f"[{name}] SKIP — {reason}")
+        return True
 
     if not Path(cwd).exists():
         log.warning(f"[{name}] Directory not found: {cwd}  SKIP")
