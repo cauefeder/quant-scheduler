@@ -241,8 +241,12 @@ _RESOLVE_BATCH_LIMIT = 50  # max markets queried per resolver run
 
 
 def _fetch_gamma_market(slug: str) -> list[dict] | None:
-    """Query Gamma for a single market by slug. Returns the JSON list, or None on failure."""
-    qs = urllib.parse.urlencode({"slug": slug})
+    """Query Gamma for a single market by slug. Returns the JSON list, or None on failure.
+
+    `closed=true` is required: the /markets endpoint defaults to active markets
+    only, so without it Gamma returns an empty list for any resolved market.
+    """
+    qs = urllib.parse.urlencode({"slug": slug, "closed": "true"})
     req = urllib.request.Request(
         f"{GAMMA_API}?{qs}",
         headers={"User-Agent": "signal_tracker/1.0", "Accept": "application/json"},
@@ -256,10 +260,14 @@ def _fetch_gamma_market(slug: str) -> list[dict] | None:
 
 
 def _parse_resolution(market: dict) -> str | None:
-    """Return 'YES', 'NO', or None if the market isn't resolved yet."""
+    """Return 'YES', 'NO', or None if the market isn't resolved yet.
+
+    Note: we used to also require `resolutionSource` to be truthy, but Gamma
+    populates that field with the empty string for resolved markets — so the
+    check was rejecting every real settlement. Trust `closed=True` plus
+    outcomePrices-at-boundary instead.
+    """
     if not market.get("closed"):
-        return None
-    if not market.get("resolutionSource"):
         return None
     try:
         prices = json.loads(market.get("outcomePrices", "[]"))
@@ -295,16 +303,28 @@ def resolve_polymarket_signals() -> int:
     resolved_count = 0
     for row in rows:
         market_data = _fetch_gamma_market(row["market_slug"])
-        if not market_data:
-            time.sleep(0.2)
-            continue
         market = market_data[0] if isinstance(market_data, list) and market_data else None
-        if not market:
+
+        if market is None:
+            # Gamma found nothing for this slug — slug rot / archival / wrong
+            # slug at log time. Mark as NO_MATCH so we don't keep re-fetching
+            # it every backfill batch; aggregator filters NO_MATCH out of P&L.
+            with _connect() as conn:
+                conn.execute(
+                    "UPDATE signals SET outcome = 'NO_MATCH', resolved_at = ?, "
+                    "resolution_data = ? WHERE id = ?",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        json.dumps({"source": "gamma-api", "reason": "slug_not_found"}),
+                        row["id"],
+                    ),
+                )
             time.sleep(0.2)
             continue
 
         resolution = _parse_resolution(market)
         if not resolution:
+            # Market exists but not yet at boundary settlement — leave open.
             time.sleep(0.2)
             continue
 

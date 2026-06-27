@@ -206,6 +206,110 @@ def test_resolve_polymarket_skips_open_markets(fresh_tracker):
     assert resolved == 0
 
 
+# ── Bug-fix regression tests ──────────────────────────────────────────────────
+# Real Gamma responses for closed markets have resolutionSource='' (empty string),
+# and the /markets endpoint defaults to active-only — closed markets aren't
+# returned without an explicit closed=true filter. Both broke the resolver in
+# prod (4,632 unresolved signals over weeks).
+
+
+def test_resolve_succeeds_when_resolution_source_is_empty(fresh_tracker):
+    """Closed market with resolutionSource='' must still resolve.
+
+    This is the actual production case — Gamma sets resolutionSource='' for
+    resolved markets, not None. The old resolver's `if not resolutionSource`
+    check rejected every real market and reported 0 resolved.
+    """
+    sig_id = fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    fake = [{
+        "slug": "will-x-happen",
+        "closed": True,
+        "resolutionSource": "",  # production reality, not the synthetic URL
+        "outcomePrices": json.dumps(["1", "0"]),  # YES won
+    }]
+    with patch.object(fresh_tracker, "_fetch_gamma_market", return_value=fake):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 1
+    assert fresh_tracker.get_signal(sig_id)["outcome"] == "WIN"
+
+
+def test_fetch_gamma_market_requests_closed_true(monkeypatch):
+    """_fetch_gamma_market must pass closed=true so the /markets endpoint
+    returns closed markets (it defaults to active-only otherwise)."""
+    import signal_tracker as st
+    seen_urls: list[str] = []
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"[]"
+
+    def fake_urlopen(req, timeout=None):
+        seen_urls.append(req.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(st.urllib.request, "urlopen", fake_urlopen)
+    st._fetch_gamma_market("will-x-happen")
+    assert seen_urls, "urlopen should have been called"
+    assert "closed=true" in seen_urls[0]
+    assert "slug=will-x-happen" in seen_urls[0]
+
+
+def test_resolve_skips_unsettled_market(fresh_tracker):
+    """outcomePrices not at boundary (0/1) means market isn't fully settled.
+    Treat as unresolved — don't write a fake outcome."""
+    fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="will-x-happen",
+        kelly_bet=10.0,
+    )
+    fake = [{
+        "slug": "will-x-happen",
+        "closed": True,
+        "resolutionSource": "",
+        "outcomePrices": json.dumps(["0.7", "0.3"]),  # not at boundary
+    }]
+    with patch.object(fresh_tracker, "_fetch_gamma_market", return_value=fake):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 0
+
+
+def test_resolve_handles_empty_gamma_response(fresh_tracker):
+    """Slug returns no markets (slug stale / wrong) — skip cleanly."""
+    fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="ghost-market",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market", return_value=None):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 0
+
+
+def test_resolve_marks_slug_not_found_as_no_match(fresh_tracker):
+    """Empty Gamma response → outcome='NO_MATCH' so resolver doesn't loop
+    forever on the same dead slugs."""
+    sig_id = fresh_tracker.log_signal(
+        system="polytraders", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40, market_slug="dead-slug",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_market", return_value=[]):
+        fresh_tracker.resolve_polymarket_signals()
+
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "NO_MATCH"
+    assert row["resolved_at"] is not None
+    # Next call should NOT re-attempt this signal (already marked).
+    with patch.object(fresh_tracker, "_fetch_gamma_market") as mock:
+        fresh_tracker.resolve_polymarket_signals()
+    mock.assert_not_called()
+
+
 def test_resolve_straddle_win(fresh_tracker):
     """move=8% > breakeven=5% (straddle_cost 4% + cost_estimate 1%) → WIN."""
     sig_id = fresh_tracker.log_signal(
