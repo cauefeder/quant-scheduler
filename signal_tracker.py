@@ -362,7 +362,11 @@ def resolve_polymarket_signals() -> int:
 # ── ModelTelegra resolution ──────────────────────────────────────────────────
 
 # Bars-ahead by signal timeframe — how far in the future to look up the realised price.
-_TREND_HORIZONS_HOURS = {"1H": 24, "1D": 24 * 5, "1W": 24 * 30}
+# 1H was bumped from 24h -> 72h on 2026-06-28 after the M2 backtest
+# (docs/modeltelegra_horizon_backtest.md) showed +$232 cross-ticker improvement
+# vs the 24h baseline over the same 132 historical signals. Tests in
+# tests/test_signal_tracker.py pin the value to prevent silent reverts.
+_TREND_HORIZONS_HOURS = {"1H": 72, "1D": 24 * 5, "1W": 24 * 30}
 
 
 def _fetch_price_at(*, ticker: str, timestamp: datetime) -> float | None:

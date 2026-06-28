@@ -415,6 +415,16 @@ def test_resolve_straddle_quiet_loss(fresh_tracker):
     assert row["actual_pnl"] < 0
 
 
+def test_trend_horizons_pinned_for_audit(fresh_tracker):
+    """Regression: 1H trend horizon must stay 72 after the M2 backtest
+    decision (docs/modeltelegra_horizon_backtest.md). Reverting to 24 is
+    a real money policy change that should require updating this test."""
+    assert fresh_tracker._TREND_HORIZONS_HOURS["1H"] == 72
+    # 1D / 1W are untested by backtest yet — left at original values.
+    assert fresh_tracker._TREND_HORIZONS_HOURS["1D"] == 24 * 5
+    assert fresh_tracker._TREND_HORIZONS_HOURS["1W"] == 24 * 30
+
+
 def test_resolve_straddle_dollar_premium_normalised(fresh_tracker):
     """ModelTelegra logs straddle_cost as a dollar premium. The resolver
     must normalise to a fractional move so the breakeven comparison
