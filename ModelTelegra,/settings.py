@@ -83,10 +83,9 @@ class TrendConfig:
         "SOL-USD": "Solana",
         "SPY": "S&P 500 ETF",
         "QQQ": "Nasdaq 100 ETF",
-        "GC=F": "Gold Futures",
-        "SI=F": "Silver Futures",
-        "CL=F": "Crude Oil Futures",
     })
+    # Futures (GC=F, SI=F, CL=F) dropped 2026-06-28 — see
+    # docs/modeltelegra_analysis.md. 40-46% WR, -$24 combined.
     # Timeframes to fetch
     timeframes: Dict[str, Dict] = field(default_factory=lambda: {
         "1h": {"period": "60d", "interval": "1h"},

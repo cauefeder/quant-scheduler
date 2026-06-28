@@ -75,7 +75,13 @@ class VolatilityConfig:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class TrendConfig:
-    # Default tickers to scan
+    # Default tickers to scan.
+    #
+    # Futures (GC=F, SI=F, CL=F) dropped 2026-06-28 after the M1 analysis
+    # (docs/modeltelegra_analysis.md) — they move on macro / geopolitical
+    # drivers that the 24h momentum signal can't capture. Combined P&L
+    # over 38 resolved bets was -$24 with 40-46% win rates. Crypto +
+    # equity-index tickers below are the segment that actually works.
     default_tickers: Dict[str, str] = field(default_factory=lambda: {
         "BTC-USD": "Bitcoin",
         "ETH-USD": "Ethereum",
@@ -83,9 +89,6 @@ class TrendConfig:
         "SOL-USD": "Solana",
         "SPY": "S&P 500 ETF",
         "QQQ": "Nasdaq 100 ETF",
-        "GC=F": "Gold Futures",
-        "SI=F": "Silver Futures",
-        "CL=F": "Crude Oil Futures",
     })
     # Timeframes to fetch
     timeframes: Dict[str, Dict] = field(default_factory=lambda: {
