@@ -365,28 +365,47 @@ def resolve_polymarket_signals() -> int:
 _TREND_HORIZONS_HOURS = {"1H": 24, "1D": 24 * 5, "1W": 24 * 30}
 
 
-def _fetch_btc_price_at(timestamp: datetime) -> float | None:
-    """Fetch the BTC-USD spot price at (or just after) the given UTC timestamp via yfinance."""
+def _fetch_price_at(*, ticker: str, timestamp: datetime) -> float | None:
+    """Fetch the close price of `ticker` at (or nearest to) the given UTC timestamp.
+
+    Uses yfinance hourly bars over a ±2 day window so weekend / holiday gaps
+    on futures (GC=F, SI=F) and 24/7 instruments (BTC-USD) are both handled.
+    Returns None when no bar exists in the window — caller treats this as
+    NO_MATCH so the resolver doesn't loop on dead requests.
+    """
     try:
-        import yfinance as yf  # local import — yfinance is heavy
+        import pandas as pd
+        import yfinance as yf
     except ImportError:
-        log.warning("yfinance not installed — cannot resolve ModelTelegra signals")
+        log.warning("yfinance/pandas not installed — cannot resolve ModelTelegra signals")
         return None
     try:
-        end = timestamp.replace(microsecond=0)
-        # 24h window centered on target; yfinance returns hourly bars
-        ticker = yf.Ticker("BTC-USD")
-        hist = ticker.history(
-            start=end.strftime("%Y-%m-%d"),
-            end=(end.replace(hour=23, minute=59)).strftime("%Y-%m-%d"),
-            interval="1h",
-        )
+        from datetime import timedelta
+
+        start = (timestamp - timedelta(days=2)).strftime("%Y-%m-%d")
+        end = (timestamp + timedelta(days=2)).strftime("%Y-%m-%d")
+        hist = yf.Ticker(ticker).history(start=start, end=end, interval="1h")
         if hist.empty:
             return None
-        return float(hist["Close"].iloc[-1])
+        # Normalise to UTC and pick the bar nearest to the target timestamp
+        if hist.index.tz is None:
+            hist.index = hist.index.tz_localize("UTC")
+        else:
+            hist.index = hist.index.tz_convert("UTC")
+        target = pd.Timestamp(timestamp).tz_convert("UTC") if pd.Timestamp(timestamp).tzinfo else pd.Timestamp(timestamp).tz_localize("UTC")
+        idx = hist.index.get_indexer([target], method="nearest")[0]
+        if idx == -1:
+            return None
+        return float(hist["Close"].iloc[idx])
     except Exception as exc:  # noqa: BLE001
-        log.debug("yfinance fetch failed: %s", exc)
+        log.debug("yfinance fetch failed for %s @ %s: %s", ticker, timestamp, exc)
         return None
+
+
+# Back-compat shim — the old function name is referenced in older runbooks
+# and may still be imported by ad-hoc scripts. Routes through the generic helper.
+def _fetch_btc_price_at(timestamp: datetime) -> float | None:
+    return _fetch_price_at(ticker="BTC-USD", timestamp=timestamp)
 
 
 def resolve_modeltelegra_signals() -> int:
@@ -397,7 +416,7 @@ def resolve_modeltelegra_signals() -> int:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT id, signal_type, direction, market_price, kelly_bet,
+            SELECT id, signal_type, direction, ticker, market_price, kelly_bet,
                    cost_estimate, raw_features, created_at
             FROM signals
             WHERE outcome IS NULL
@@ -412,14 +431,36 @@ def resolve_modeltelegra_signals() -> int:
     for row in rows:
         created = datetime.fromisoformat(row["created_at"])
         raw = json.loads(row["raw_features"]) if row["raw_features"] else {}
+        ticker = row["ticker"] or "BTC-USD"  # legacy signals defaulted to BTC
+
+        def _mark_no_match(signal_id: int, reason: str) -> None:
+            """Stamp NO_MATCH so we don't keep re-fetching dead targets."""
+            with _connect() as nm_conn:
+                nm_conn.execute(
+                    "UPDATE signals SET outcome = 'NO_MATCH', resolved_at = ?, "
+                    "resolution_data = ? WHERE id = ?",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        json.dumps({"source": "yfinance", "reason": reason}),
+                        signal_id,
+                    ),
+                )
 
         if row["signal_type"] == "straddle":
             target_time = created + timedelta(hours=24)
-            future_price = _fetch_btc_price_at(target_time)
+            future_price = _fetch_price_at(ticker=ticker, timestamp=target_time)
             if future_price is None or future_price <= 0:
+                _mark_no_match(row["id"], "no_price_at_target")
                 continue
             move = abs(future_price - row["market_price"]) / row["market_price"]
-            breakeven = float(raw.get("straddle_cost", 0.04)) + (row["cost_estimate"] or 0.0)
+            # straddle_cost is logged inconsistently across ModelTelegra versions:
+            # some emit a fractional move (e.g. 0.04 = 4%), others emit the
+            # dollar premium ($1,734.80 on a $60k BTC). Normalise to a fraction
+            # by dividing by market_price when the value is clearly absolute.
+            raw_cost = float(raw.get("straddle_cost", 0.04))
+            if raw_cost > 1.0 and row["market_price"] > 0:
+                raw_cost = raw_cost / row["market_price"]
+            breakeven = raw_cost + (row["cost_estimate"] or 0.0)
             if breakeven <= 0:
                 continue
             bet = row["kelly_bet"] or 0.0
@@ -435,8 +476,9 @@ def resolve_modeltelegra_signals() -> int:
             tf = raw.get("timeframe", "1D")
             hours_ahead = _TREND_HORIZONS_HOURS.get(tf, 24)
             target_time = created + timedelta(hours=hours_ahead)
-            future_price = _fetch_btc_price_at(target_time)
+            future_price = _fetch_price_at(ticker=ticker, timestamp=target_time)
             if future_price is None or future_price <= 0:
+                _mark_no_match(row["id"], "no_price_at_target")
                 continue
             change = (future_price - row["market_price"]) / row["market_price"]
             went_up = change > 0

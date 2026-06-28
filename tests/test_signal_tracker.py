@@ -310,6 +310,135 @@ def test_resolve_marks_slug_not_found_as_no_match(fresh_tracker):
     mock.assert_not_called()
 
 
+# ── ModelTelegra resolver bug-fix regression tests ───────────────────────────
+
+
+def test_fetch_price_at_takes_ticker_argument(fresh_tracker):
+    """The resolver used to hardcode yf.Ticker('BTC-USD'), so gold (GC=F)
+    and silver (SI=F) signals were being resolved against BTC prices.
+    The fetcher must accept the ticker explicitly."""
+    import inspect
+    sig = inspect.signature(fresh_tracker._fetch_price_at)
+    assert "ticker" in sig.parameters
+    assert "timestamp" in sig.parameters
+
+
+def test_resolve_modeltelegra_uses_signal_ticker(fresh_tracker):
+    """Resolver must fetch the signal's own ticker, not a hardcoded BTC."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="trend_direction",
+        direction="LONG", ticker="GC=F", estimated_edge=0.02,
+        market_price=4000.0, kelly_bet=5.0,
+        raw_features={"timeframe": "1H"},
+    )
+    seen_tickers: list[str] = []
+
+    def fake_fetch(*, ticker, timestamp):
+        seen_tickers.append(ticker)
+        return 4100.0  # gold went up
+
+    with patch.object(fresh_tracker, "_fetch_price_at", side_effect=fake_fetch):
+        fresh_tracker.resolve_modeltelegra_signals()
+
+    assert "GC=F" in seen_tickers, f"expected GC=F to be queried, saw {seen_tickers}"
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"  # LONG + price up = WIN
+
+
+def test_resolve_modeltelegra_marks_no_match_when_price_unavailable(fresh_tracker):
+    """yfinance returning None (weekend, holiday, delisted) → NO_MATCH so
+    the resolver doesn't keep re-fetching the same dead signal."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="trend_direction",
+        direction="LONG", ticker="GC=F", estimated_edge=0.02,
+        market_price=4000.0, kelly_bet=5.0,
+        raw_features={"timeframe": "1H"},
+    )
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=None):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "NO_MATCH"
+    assert row["resolved_at"] is not None
+    # Next call should NOT re-attempt this signal
+    with patch.object(fresh_tracker, "_fetch_price_at") as mock:
+        fresh_tracker.resolve_modeltelegra_signals()
+    mock.assert_not_called()
+
+
+def test_resolve_trend_short_winning(fresh_tracker):
+    """SHORT + price went down = WIN."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="trend_direction",
+        direction="SHORT", ticker="BTC-USD", estimated_edge=0.02,
+        market_price=60000.0, kelly_bet=10.0,
+        raw_features={"timeframe": "1H"},
+    )
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=58000.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    # change = (58000 - 60000) / 60000 = -0.0333
+    # magnitude = 10 * 0.0333 = 0.333
+    # WIN → pnl = +0.333
+    assert row["actual_pnl"] == pytest.approx(10.0 * (2000 / 60000), abs=1e-3)
+
+
+def test_resolve_straddle_volatility_win(fresh_tracker):
+    """Straddle wins when realised move exceeds straddle cost (relative)."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="straddle",
+        direction="STRADDLE", ticker="BTC-USD", estimated_edge=0.10,
+        market_price=60000.0, kelly_bet=10.0,
+        raw_features={"straddle_cost": 0.04},  # 4% breakeven move
+    )
+    # Price moved 8% — twice the breakeven → big win
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=64800.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN"
+    assert row["actual_pnl"] > 0
+
+
+def test_resolve_straddle_quiet_loss(fresh_tracker):
+    """Straddle loses when realised move stays below breakeven."""
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="straddle",
+        direction="STRADDLE", ticker="BTC-USD", estimated_edge=0.10,
+        market_price=60000.0, kelly_bet=10.0,
+        raw_features={"straddle_cost": 0.04},
+    )
+    # 1% move — well under 4% breakeven
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=60600.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "LOSS"
+    assert row["actual_pnl"] < 0
+
+
+def test_resolve_straddle_dollar_premium_normalised(fresh_tracker):
+    """ModelTelegra logs straddle_cost as a dollar premium. The resolver
+    must normalise to a fractional move so the breakeven comparison
+    works. Regression for the 0% WR + -$50k catastrophe on BTC straddles.
+    """
+    sig_id = fresh_tracker.log_signal(
+        system="modeltelegra", signal_type="straddle",
+        direction="STRADDLE", ticker="BTC-USD", estimated_edge=0.10,
+        market_price=60000.0, kelly_bet=100.0,
+        # 1734.80 is a dollar premium (raw_cost > 1.0). Resolver should
+        # treat it as 1734.80 / 60000 = 2.89% breakeven.
+        raw_features={"straddle_cost": 1734.80},
+    )
+    # 5% move (3000 / 60000) — well above the 2.89% breakeven → WIN
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=63000.0):
+        fresh_tracker.resolve_modeltelegra_signals()
+    row = fresh_tracker.get_signal(sig_id)
+    assert row["outcome"] == "WIN", (
+        f"Expected WIN with 5% move vs 2.89% breakeven, got {row['outcome']}. "
+        "The resolver is probably treating the dollar premium as a fraction."
+    )
+    assert row["actual_pnl"] > 0
+
+
 def test_resolve_straddle_win(fresh_tracker):
     """move=8% > breakeven=5% (straddle_cost 4% + cost_estimate 1%) → WIN."""
     sig_id = fresh_tracker.log_signal(
@@ -318,7 +447,7 @@ def test_resolve_straddle_win(fresh_tracker):
         kelly_bet=100.0, cost_estimate=0.01,
         raw_features={"straddle_cost": 0.04},
     )
-    with patch.object(fresh_tracker, "_fetch_btc_price_at",
+    with patch.object(fresh_tracker, "_fetch_price_at",
                       return_value=70000.0 * 1.08):
         fresh_tracker.resolve_modeltelegra_signals()
     row = fresh_tracker.get_signal(sig_id)
@@ -335,7 +464,7 @@ def test_resolve_straddle_loss_capped_at_premium(fresh_tracker):
         kelly_bet=100.0, cost_estimate=0.01,
         raw_features={"straddle_cost": 0.04},
     )
-    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=70000.0):
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=70000.0):
         fresh_tracker.resolve_modeltelegra_signals()
     row = fresh_tracker.get_signal(sig_id)
     assert row["outcome"] == "LOSS"
@@ -349,7 +478,7 @@ def test_resolve_trend_long_win(fresh_tracker):
         kelly_bet=100.0,
         raw_features={"timeframe": "1D"},
     )
-    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=72100.0):
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=72100.0):
         fresh_tracker.resolve_modeltelegra_signals()
     row = fresh_tracker.get_signal(sig_id)
     assert row["outcome"] == "WIN"
@@ -364,7 +493,7 @@ def test_resolve_trend_short_loss(fresh_tracker):
         kelly_bet=100.0,
         raw_features={"timeframe": "1H"},
     )
-    with patch.object(fresh_tracker, "_fetch_btc_price_at", return_value=72100.0):
+    with patch.object(fresh_tracker, "_fetch_price_at", return_value=72100.0):
         fresh_tracker.resolve_modeltelegra_signals()
     row = fresh_tracker.get_signal(sig_id)
     assert row["outcome"] == "LOSS"

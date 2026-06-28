@@ -25,11 +25,13 @@ def _make_synthetic_db(path: Path, rows: list[dict]) -> None:
             system TEXT NOT NULL,
             signal_type TEXT NOT NULL,
             market_slug TEXT,
+            ticker TEXT,
             direction TEXT NOT NULL,
             estimated_edge REAL,
             market_price REAL,
             entry_price REAL,
             kelly_bet REAL,
+            raw_features TEXT,
             created_at TEXT NOT NULL,
             resolved_at TEXT,
             outcome TEXT,
@@ -157,3 +159,73 @@ def test_realized_pnl_excludes_no_match_outcomes(tmp_path: Path) -> None:
     assert af["total_signals"] == 3
     assert af["resolved"] == 1
     assert af["win_rate"] == pytest.approx(1.0)
+
+
+# ── realized_pnl_by_segment ───────────────────────────────────────────────────
+
+
+def test_segment_groups_by_signal_type_and_ticker(tmp_path: Path) -> None:
+    from lib.signal_pnl import realized_pnl_by_segment
+    db = tmp_path / "t.db"
+    _make_synthetic_db(db, [
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="BTC-USD", outcome="WIN", actual_pnl=5.0),
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="BTC-USD", outcome="LOSS", actual_pnl=-3.0),
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="GC=F", outcome="WIN", actual_pnl=8.0),
+        _row(system="modeltelegra", signal_type="straddle",
+             ticker="BTC-USD", outcome="LOSS", actual_pnl=-10.0),
+    ])
+    df = realized_pnl_by_segment(db, system="modeltelegra")
+    assert len(df) == 3
+    btc_trend = df[(df["signal_type"] == "trend_direction")
+                   & (df["ticker"] == "BTC-USD")].iloc[0]
+    assert btc_trend["resolved"] == 2
+    assert btc_trend["win_rate"] == pytest.approx(0.5)
+    assert btc_trend["total_pnl"] == pytest.approx(2.0)
+
+
+def test_segment_extracts_timeframe_from_raw_features(tmp_path: Path) -> None:
+    from lib.signal_pnl import realized_pnl_by_segment
+    db = tmp_path / "t.db"
+    _make_synthetic_db(db, [
+        {**_row(system="modeltelegra", signal_type="trend_direction",
+                ticker="BTC-USD", outcome="WIN", actual_pnl=5.0),
+         "raw_features": '{"timeframe": "1H"}'},
+        {**_row(system="modeltelegra", signal_type="trend_direction",
+                ticker="BTC-USD", outcome="LOSS", actual_pnl=-3.0),
+         "raw_features": '{"timeframe": "1D"}'},
+    ])
+    df = realized_pnl_by_segment(
+        db, system="modeltelegra",
+        segment_keys=("signal_type", "ticker", "timeframe"),
+    )
+    assert set(df["timeframe"]) == {"1H", "1D"}
+    h1 = df[df["timeframe"] == "1H"].iloc[0]
+    assert h1["resolved"] == 1
+    assert h1["win_rate"] == pytest.approx(1.0)
+
+
+def test_segment_respects_min_resolved_filter(tmp_path: Path) -> None:
+    from lib.signal_pnl import realized_pnl_by_segment
+    db = tmp_path / "t.db"
+    _make_synthetic_db(db, [
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="BTC-USD", outcome="WIN", actual_pnl=5.0),
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="GC=F", outcome="WIN", actual_pnl=8.0),
+        _row(system="modeltelegra", signal_type="trend_direction",
+             ticker="GC=F", outcome="LOSS", actual_pnl=-3.0),
+    ])
+    df = realized_pnl_by_segment(db, system="modeltelegra", min_resolved=2)
+    # BTC has only 1 resolved → filtered out
+    assert set(df["ticker"]) == {"GC=F"}
+
+
+def test_segment_empty_db_returns_empty(tmp_path: Path) -> None:
+    from lib.signal_pnl import realized_pnl_by_segment
+    db = tmp_path / "t.db"
+    _make_synthetic_db(db, [])
+    df = realized_pnl_by_segment(db, system="modeltelegra")
+    assert df.empty
