@@ -259,6 +259,27 @@ def _fetch_gamma_market(slug: str) -> list[dict] | None:
         return None
 
 
+def _fetch_gamma_by_condition_id(condition_id: str) -> list[dict] | None:
+    """Query Gamma by condition_id. Stable across market re-slugs.
+
+    Used as the primary lookup when a signal has a condition_id — the slug
+    field rots over time (e.g. `-144-885-839` gets appended), which was the
+    cause of ~35% of Polymarket signals being marked NO_MATCH in the E2
+    resolver. condition_id is the on-chain identifier and never changes.
+    """
+    qs = urllib.parse.urlencode({"condition_ids": condition_id, "closed": "true"})
+    req = urllib.request.Request(
+        f"{GAMMA_API}?{qs}",
+        headers={"User-Agent": "signal_tracker/1.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Gamma condition_id fetch failed for %s: %s", condition_id, exc)
+        return None
+
+
 def _parse_resolution(market: dict) -> str | None:
     """Return 'YES', 'NO', or None if the market isn't resolved yet.
 
@@ -289,7 +310,8 @@ def resolve_polymarket_signals() -> int:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT id, market_slug, direction, market_price, entry_price, kelly_bet
+            SELECT id, market_slug, condition_id, direction, market_price,
+                   entry_price, kelly_bet
             FROM signals
             WHERE outcome IS NULL
               AND signal_type = 'polymarket'
@@ -302,8 +324,20 @@ def resolve_polymarket_signals() -> int:
 
     resolved_count = 0
     for row in rows:
-        market_data = _fetch_gamma_market(row["market_slug"])
-        market = market_data[0] if isinstance(market_data, list) and market_data else None
+        # Prefer condition_id when available — stable across slug rot.
+        market = None
+        cid = row["condition_id"]
+        if cid:
+            market_data = _fetch_gamma_by_condition_id(cid)
+            market = (
+                market_data[0] if isinstance(market_data, list) and market_data else None
+            )
+        # Fall back to slug lookup for legacy rows that never captured cid.
+        if market is None:
+            market_data = _fetch_gamma_market(row["market_slug"])
+            market = (
+                market_data[0] if isinstance(market_data, list) and market_data else None
+            )
 
         if market is None:
             # Gamma found nothing for this slug — slug rot / archival / wrong

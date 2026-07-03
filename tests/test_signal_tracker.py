@@ -415,6 +415,101 @@ def test_resolve_straddle_quiet_loss(fresh_tracker):
     assert row["actual_pnl"] < 0
 
 
+def test_fetch_gamma_by_condition_id_sends_correct_query(monkeypatch):
+    """The condition_id fetcher must include closed=true so Gamma returns
+    resolved markets (same defensive default as the slug fetcher)."""
+    import signal_tracker as st
+    seen_urls: list[str] = []
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"[]"
+
+    def fake_urlopen(req, timeout=None):
+        seen_urls.append(req.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(st.urllib.request, "urlopen", fake_urlopen)
+    st._fetch_gamma_by_condition_id("0xdeadbeef")
+    assert seen_urls, "urlopen should have been called"
+    assert "condition_ids=0xdeadbeef" in seen_urls[0]
+    assert "closed=true" in seen_urls[0]
+
+
+def test_resolve_prefers_condition_id_over_slug(fresh_tracker):
+    """When a signal has both slug and condition_id, the resolver must
+    consult condition_id first. This is the whole point of N1 — condition_id
+    is stable across market re-slugs."""
+    sig_id = fresh_tracker.log_signal(
+        system="poly", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40,
+        market_slug="rotted-slug", condition_id="0xstable",
+        kelly_bet=10.0,
+    )
+
+    def fake_slug_fetch(slug):
+        # Old slug returns empty (rotted)
+        return []
+
+    fake_cid_market = [{
+        "slug": "current-slug",
+        "closed": True,
+        "resolutionSource": "",
+        "outcomePrices": json.dumps(["1", "0"]),
+    }]
+
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      side_effect=fake_slug_fetch), \
+         patch.object(fresh_tracker, "_fetch_gamma_by_condition_id",
+                      return_value=fake_cid_market) as cid_mock:
+        resolved = fresh_tracker.resolve_polymarket_signals()
+
+    assert resolved == 1
+    assert fresh_tracker.get_signal(sig_id)["outcome"] == "WIN"
+    cid_mock.assert_called_with("0xstable")
+
+
+def test_resolve_falls_back_to_slug_when_no_condition_id(fresh_tracker):
+    """Signals without condition_id (e.g., alphafeed history) go through
+    the slug path unchanged."""
+    sig_id = fresh_tracker.log_signal(
+        system="alphafeed", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40,
+        market_slug="only-slug", condition_id=None,
+        kelly_bet=10.0,
+    )
+    fake_market = [{
+        "slug": "only-slug",
+        "closed": True,
+        "resolutionSource": "",
+        "outcomePrices": json.dumps(["1", "0"]),
+    }]
+    with patch.object(fresh_tracker, "_fetch_gamma_market",
+                      return_value=fake_market):
+        resolved = fresh_tracker.resolve_polymarket_signals()
+    assert resolved == 1
+    assert fresh_tracker.get_signal(sig_id)["outcome"] == "WIN"
+
+
+def test_resolve_no_match_when_both_lookups_fail(fresh_tracker):
+    """condition_id and slug both return nothing → NO_MATCH (unchanged
+    behavior), so the resolver doesn't loop forever on truly-dead signals."""
+    fresh_tracker.log_signal(
+        system="poly", signal_type="polymarket", direction="YES",
+        estimated_edge=0.05, market_price=0.40,
+        market_slug="dead-slug", condition_id="0xdead",
+        kelly_bet=10.0,
+    )
+    with patch.object(fresh_tracker, "_fetch_gamma_by_condition_id",
+                      return_value=[]), \
+         patch.object(fresh_tracker, "_fetch_gamma_market", return_value=[]):
+        fresh_tracker.resolve_polymarket_signals()
+
+    row = fresh_tracker.get_signal(1)
+    assert row["outcome"] == "NO_MATCH"
+
+
 def test_trend_horizons_pinned_for_audit(fresh_tracker):
     """Regression: 1H trend horizon must stay 72 after the M2 backtest
     decision (docs/modeltelegra_horizon_backtest.md). Reverting to 24 is
