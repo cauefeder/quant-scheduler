@@ -57,8 +57,8 @@ echo $script = '"%SCHEDULER%" --once'
 echo $workdir = "%PROJECTS_DIR%"
 echo.
 echo function Register-QuantTask {
-echo     param($Name, $Time)
-echo     $action = New-ScheduledTaskAction -Execute $python -Argument $script -WorkingDirectory $workdir
+echo     param($Name, $Time, $Slot)
+echo     $action = New-ScheduledTaskAction -Execute $python -Argument ('"%SCHEDULER%" --scheduled ' + $Slot) -WorkingDirectory $workdir
 echo     $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 echo     $settings = New-ScheduledTaskSettingsSet `
 echo         -StartWhenAvailable `
@@ -72,8 +72,8 @@ echo     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigge
 echo     Write-Host "[OK] Registered: $Name at $Time ^(StartWhenAvailable=true^)"
 echo }
 echo.
-echo Register-QuantTask "QuantScheduler_Morning"   "%MORNING_TIME%"
-echo Register-QuantTask "QuantScheduler_Afternoon" "%AFTERNOON_TIME%"
+echo Register-QuantTask "QuantScheduler_Morning"   "%MORNING_TIME%" "12:00"
+echo Register-QuantTask "QuantScheduler_Afternoon" "%AFTERNOON_TIME%" "22:00"
 echo.
 echo # Startup daemon task (persistent process, also handles catch-up)
 echo $daemon_action = New-ScheduledTaskAction -Execute $python -Argument '"%SCHEDULER%"' -WorkingDirectory $workdir
@@ -96,8 +96,8 @@ if errorlevel 1 (
     echo [WARN] PowerShell registration failed. Falling back to schtasks...
     echo       Note: StartWhenAvailable will NOT be set with this method.
     echo.
-    schtasks /create /tn "QuantScheduler_Morning" /tr "\"%PYTHON%\" \"%SCHEDULER%\" --once" /sc DAILY /st %MORNING_TIME% /ru "%USERNAME%" /rl HIGHEST /f
-    schtasks /create /tn "QuantScheduler_Afternoon" /tr "\"%PYTHON%\" \"%SCHEDULER%\" --once" /sc DAILY /st %AFTERNOON_TIME% /ru "%USERNAME%" /rl HIGHEST /f
+    schtasks /create /tn "QuantScheduler_Morning" /tr "\"%PYTHON%\" \"%SCHEDULER%\" --scheduled 12:00" /sc DAILY /st %MORNING_TIME% /ru "%USERNAME%" /rl HIGHEST /f
+    schtasks /create /tn "QuantScheduler_Afternoon" /tr "\"%PYTHON%\" \"%SCHEDULER%\" --scheduled 22:00" /sc DAILY /st %AFTERNOON_TIME% /ru "%USERNAME%" /rl HIGHEST /f
     schtasks /create /tn "QuantScheduler_Daemon" /tr "\"%PYTHON%\" \"%SCHEDULER%\"" /sc ONLOGON /ru "%USERNAME%" /rl HIGHEST /f
 )
 
