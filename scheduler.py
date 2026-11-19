@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -57,6 +58,7 @@ MODEL_DIR        = PROJECTS_DIR / "ModelTelegra," / "quant_desk"
 POLY_DIR         = PROJECTS_DIR / "Poly"
 POLYTRADERS_DIR  = PROJECTS_DIR / "PolyTraders"
 LOG_FILE         = PROJECTS_DIR / "scheduler.log"
+STATE_DB         = PROJECTS_DIR / "scheduler_state.sqlite3"
 
 # Load credentials from .env at project root (never commit .env)
 _load_dotenv(PROJECTS_DIR / ".env")
@@ -177,6 +179,9 @@ log = logging.getLogger("scheduler")
 # ── Telegram helper (stdlib only, no external deps) ───────────────────────────
 def _tg_send(text: str, token: str = TG_TOKEN, chat_id: str = TG_CHAT_ID) -> bool:
     """Send a plain-text message to Telegram using only urllib (stdlib)."""
+    if not token or not chat_id:
+        log.error("Telegram credentials missing")
+        return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     # Split long messages into 4000-char chunks
     chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
@@ -193,10 +198,10 @@ def _tg_send(text: str, token: str = TG_TOKEN, chat_id: str = TG_CHAT_ID) -> boo
         )
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                if resp.status != 200:
+                if resp.status != 200 or json.loads(resp.read()).get("ok") is not True:
                     ok = False
         except Exception as exc:
-            log.error(f"Telegram send failed: {exc}")
+            log.error("Telegram send failed: %s", type(exc).__name__)
             ok = False
     return ok
 
@@ -248,7 +253,9 @@ def run_project(project: dict, dry_run: bool = False) -> bool:
 
         if capture and result.stdout:
             header = f"<b>Poly Kelly Scraper</b>\n<code>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</code>\n\n"
-            _tg_send(header + result.stdout[:3500])
+            if not _tg_send(header + result.stdout[:3500]):
+                log.error("[%s] Report delivery failed", name)
+                return False
             log.info(f"[{name}] Output forwarded to Telegram ({len(result.stdout)} chars)")
 
         log.info(f"[{name}] Done (exit 0)")
@@ -266,7 +273,7 @@ def run_project(project: dict, dry_run: bool = False) -> bool:
 
 
 # ── Run all projects ───────────────────────────────────────────────────────────
-def run_all(dry_run: bool = False) -> None:
+def run_all(dry_run: bool = False) -> bool:
     """Run every project in sequence, logging successes/failures."""
     now_utc = datetime.now(timezone.utc)
     utc_now = now_utc.strftime("%Y-%m-%d %H:%M UTC")
@@ -298,6 +305,7 @@ def run_all(dry_run: bool = False) -> None:
                 + "\n".join(f"  - {f}" for f in fails)
             )
             _tg_send(summary)
+    return all(s == "OK" for s in results.values())
 
 
 # ── Daemon loop ────────────────────────────────────────────────────────────────
@@ -346,6 +354,27 @@ def is_scheduled_now(last_run_times: dict[tuple[int, int], float]) -> tuple[int,
     return None
 
 
+def claim_slot(slot: tuple[int, int], now: datetime, db_path: Path | None = None) -> bool:
+    """Atomically claim a UTC date/slot across processes sharing one state DB.
+
+    Claims are recorded before sending to avoid duplicate alerts after a crash.
+    This intentionally favors at-most-once attempts; a partial failed run needs
+    manual investigation, not an automatic replay of all messages.
+    """
+    path = STATE_DB if db_path is None else db_path
+    key = f"{now.date().isoformat()}T{slot[0]:02d}:{slot[1]:02d}Z"
+    with sqlite3.connect(path, timeout=10) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS slots (slot TEXT PRIMARY KEY)")
+        return conn.execute("INSERT OR IGNORE INTO slots VALUES (?)", (key,)).rowcount == 1
+
+
+def run_claimed_slot(slot: tuple[int, int], now: datetime) -> bool:
+    if not claim_slot(slot, now):
+        log.info("Skipping already-claimed slot %s on %s", slot, now.date())
+        return True
+    return run_all()
+
+
 def run_daemon() -> None:
     """Persistent loop: check time every 30 seconds and run at scheduled times."""
     last_run_times: dict[tuple[int, int], float] = {}
@@ -362,15 +391,29 @@ def run_daemon() -> None:
         slot = is_scheduled_now(last_run_times)
         if slot:
             last_run_times[slot] = time.time()
-            run_all()
+            run_claimed_slot(slot, datetime.now(timezone.utc))
         time.sleep(30)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 def main() -> None:
     args = sys.argv[1:]
-    if "--once" in args:
-        run_all(dry_run=False)
+    if "--scheduled" in args:
+        index = args.index("--scheduled")
+        slot = tuple(map(int, args[index + 1].split(":")))
+        if slot not in SCHEDULE_UTC:
+            raise SystemExit("Invalid scheduled slot")
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+        scheduled = now.replace(hour=slot[0], minute=slot[1], second=0, microsecond=0)
+        if now < scheduled - timedelta(minutes=TRIGGER_WINDOW_MINUTES) or now > scheduled + timedelta(hours=CATCHUP_HOURS):
+            log.warning("Scheduled invocation outside its UTC window; skipping")
+            return
+        if not run_claimed_slot(slot, now):
+            raise SystemExit(1)
+    elif "--once" in args:
+        if not run_all(dry_run=False):
+            raise SystemExit(1)
     elif "--test" in args:
         run_all(dry_run=True)
     else:
