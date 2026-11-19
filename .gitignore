@@ -54,3 +54,6 @@ research/*
 
 # ── Cursor files ──────────────────────────────────────────────────────────────
 .backfill_cursor
+
+# Local scheduler claim ledger
+scheduler_state.sqlite3*
