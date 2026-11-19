@@ -58,7 +58,8 @@ echo $workdir = "%PROJECTS_DIR%"
 echo.
 echo function Register-QuantTask {
 echo     param($Name, $Time, $Slot)
-echo     $action = New-ScheduledTaskAction -Execute $python -Argument ('"%SCHEDULER%" --scheduled ' + $Slot) -WorkingDirectory $workdir
+echo     $taskArgs = '"%SCHEDULER%" --scheduled ' + $Slot
+echo     $action = New-ScheduledTaskAction -Execute $python -Argument $taskArgs -WorkingDirectory $workdir
 echo     $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 echo     $settings = New-ScheduledTaskSettingsSet `
 echo         -StartWhenAvailable `
